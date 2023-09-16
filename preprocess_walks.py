@@ -13,10 +13,11 @@ if __name__ == "__main__":
                 breakpoint()
             ind = line.find('X=')+2
             temp = line.split()[-2]
-            for val in line[ind:].split(','):
+            for val in line[ind:].split(';'):
                 walks.append(temp.replace('X', val))
         else:
             walks.append(line.split(' ')[-1])
     with open(args.data.replace('.txt', '_preprocess.txt'), 'w+') as f:
         for w in walks:
             f.write(f"{w}\n")
+            
