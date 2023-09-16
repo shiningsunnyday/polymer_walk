@@ -3,6 +3,17 @@ from itertools import product, permutations
 
 mols = load_mols('/home/msun415/polymer_walk/data/all_groups')
 
+class Node:
+    def __init__(self, parent, children, val, id, side_chain=False):        
+        self.parent = parent
+        self.children = children
+        self.val = val
+        self.id = id
+        self.side_chain = side_chain
+
+    def add_child(self, child):
+        self.children.append(child)
+
 
 def list_red_members(mol):
     r = []

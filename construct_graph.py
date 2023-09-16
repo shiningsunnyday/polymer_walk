@@ -5,15 +5,34 @@ import numpy as np
 import networkx as nx
 from utils import *
 from tqdm import tqdm
+import pickle
 import re
 import matplotlib.colors as mcolors
 
 base_colors = list(mcolors.BASE_COLORS)
-grp = '(?:[SPL][0-9]+)'
+grp = '|'.join([f'(?:{name_group(i)})' for i in range(1, 98)])
+grp = f'(?:{grp})'
 pat_chain = f'(?:->{grp})+'
-pat_inner = f'\[{pat_chain}(?:,{pat_chain})*\]'
-pat_or = f'({grp}{pat_inner})|({grp})'
-pat = f'(?:{pat_or})(?:->({pat_or}))*'
+pat_inner = f'\[(?:(?:,?){pat_chain})+\]'
+pat_or = f'(?:({grp}{pat_inner})|({grp}))'
+pat = f'(?:{pat_or})(?:->{pat_or})*'
+
+def extract_chain(walk):
+    side_chains = []
+    while True:
+        chain_search = re.search(pat_inner, walk)
+        if not chain_search: break
+        start, end = chain_search.span()
+        side_chains.append(walk[start:end])
+        walk = walk[:start]+'#'+walk[end:] 
+    
+    res = walk.split('->')
+    j = 0
+    for i in range(len(res)):
+        if '#' in res[i]:
+            res[i] = res[i].replace('#', side_chains[j])
+            j += 1
+    return res    
 
 def search_walk(i, walk, graph, cur):
     if i == len(walk)-1: return cur
@@ -27,31 +46,27 @@ def search_walk(i, walk, graph, cur):
         cur.pop()
     return []
 
-    
-class Node:
-    def __init__(self, parent, children, val):        
-        self.parent = parent
-        self.children = children
-        self.val = val
-
-    def add_child(self, child):
-        self.children.append(child)
-
 
 def dfs_traverse(walk):
     prev_node = None
     root_node = None
     conn = []
+    id = 0
     for i in range(len(walk)):
         if '[' in walk[i]:
-            match = re.match(f'({grp})\[->({grp})(?:,->({grp}))*\]', walk[i])
-            grps = match.groups()
-            cur = Node(prev_node, [], grps[0])
+            start = walk[i].find('[')
+            assert ']' == walk[i][-1]
+            grps = [walk[i][:start]]
+            for grp in walk[i][start+1:-1].split(','):
+                grps.append(grp[2:])
+            cur = Node(prev_node, [], grps[0], id)
+            id += 1
             if i: 
                 conn.append((prev_node, cur))
                 conn.append((cur, prev_node))
             for g in grps[1:]:
-                g_child = Node(cur, [], g)
+                g_child = Node(cur, [], g, id, True)
+                id += 1
                 cur.add_child(g_child)
                 conn.append((cur, g_child))
                 conn.append((g_child, cur))
@@ -60,7 +75,8 @@ def dfs_traverse(walk):
                 prev_node.add_child(cur)           
             prev_node = cur
         else:
-            cur = Node(prev_node, [], walk[i])
+            cur = Node(prev_node, [], walk[i], id)
+            id += 1
             if i: 
                 prev_node.add_child(cur)
                 conn.append((prev_node, cur))
@@ -73,7 +89,6 @@ def dfs_traverse(walk):
     conn.append((prev_node, root_node))
 
     return root_node, conn
-
 
 
 def verify_walk(r_lookup, graph, walk):
@@ -90,24 +105,31 @@ def verify_walk(r_lookup, graph, walk):
     try:
         root, conn = dfs_traverse(walk)
     except:
-        breakpoint()
+        raise
     used_reds = defaultdict(set)
     edge_conn = []
+    bad = False
     for a, b in conn:
         for i in range(len(graph[a.val][b.val])):            
             e = graph[a.val][b.val][i]
             red_j1 = find_edge(e, 'k1', r_lookup[a.val])
             if set(red_j1) & used_reds[a]: 
+                if i == len(graph[a.val][b.val])-1: bad = True
                 continue
             else: 
                 used_reds[a] |= set(red_j1)
                 # print(f"{a.val}->{b.val}")
                 # print(f"used {used_reds[a]}")
                 edge_conn.append((a, b, i))
+                if b in a.children:
+                    ind = a.children.index(b)
+                    a.children[ind] = (b, i)
+                elif b == a.parent:
+                    a.parent = (b, i)
                 break
+        if bad: raise
      
-    print("done")
-    
+    print("done")    
     return root, edge_conn
 
 
@@ -118,6 +140,7 @@ if __name__ == "__main__":
     parser.add_argument('--data_file')
     parser.add_argument('--predefined_graph_file')
     parser.add_argument('--graph_vis_file')
+    parser.add_argument('--out_path', required=False)
     args = parser.parse_args()
     mols = load_mols(args.motifs_folder)
     red_grps = annotate_extra(mols, args.extra_label_path)    
@@ -125,20 +148,16 @@ if __name__ == "__main__":
     lines = open(args.data_file).readlines()    
     r_lookup = r_member_lookup(mols)
     
+    dags = {}
     for i, l in enumerate(lines):        
-        walk = l.rstrip('\n')  
-        g = re.fullmatch(pat, walk)
-        if g:         
-            grps = [grp for grp in g.groups() if grp]
-            print(f"walk: {walk}, grps: {grps}")
-            try:   
-                root, conn = verify_walk(r_lookup, graph, grps)
-            except:
-                print("verify failed")
-                continue
-        else:
-            breakpoint()
-            print("regex failed")
+        walk = l.rstrip('\n')      
+        grps = extract_chain(walk) 
+        print(f"walk: {walk}, grps: {grps}")
+        try:             
+            root, conn = verify_walk(r_lookup, graph, grps)
+            dags[i] = (grps, root, conn)
+        except Exception as e:
+            print("verify failed")
             continue
         for a, b, e in conn:
             try:
@@ -146,7 +165,13 @@ if __name__ == "__main__":
                 graph[b.val][a.val][e]['weight'] = graph[b.val][a.val][e].get('weight', 0)+2
                 graph[a.val][b.val][e]['color'] = graph[b.val][a.val][e]['color'] = i
             except:
-                continue
+                continue                
+
+    if args.out_path: 
+        print(f"processed {len(dags)} dags")
+        pickle.dump(dags, open(args.out_path, 'wb+'))
+        breakpoint()
+
     # G = nx.MultiDiGraph(e)
     fig = plt.Figure(figsize=(100, 100))
     ax = fig.add_subplot()
