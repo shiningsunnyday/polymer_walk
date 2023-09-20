@@ -9,7 +9,7 @@ import pickle
 import re
 import matplotlib.colors as mcolors
 
-base_colors = list(mcolors.BASE_COLORS)
+base_colors = list(mcolors.TABLEAU_COLORS.values())
 grp = '|'.join([f'(?:{name_group(i)})' for i in range(1, 98)])
 grp = f'(?:{grp})'
 pat_chain = f'(?:->{grp})+'
@@ -149,6 +149,8 @@ if __name__ == "__main__":
     r_lookup = r_member_lookup(mols)
     
     dags = {}
+    used_edges = set()
+    num_colors = 0
     for i, l in enumerate(lines):        
         walk = l.rstrip('\n')      
         grps = extract_chain(walk) 
@@ -159,11 +161,25 @@ if __name__ == "__main__":
         except Exception as e:
             print("verify failed")
             continue
-        for a, b, e in conn:
+        do_color = True
+        if num_colors >= 1: do_color = False
+        else:
+            for a, b, e in conn:
+                if (a.val,b.val,e) in used_edges:
+                    do_color = False
+            num_colors += do_color
+        print("num_colors", num_colors)
+        for a, b, e in conn:            
             try:
                 graph[a.val][b.val][e]['weight'] = graph[a.val][b.val][e].get('weight', 0)+2
                 graph[b.val][a.val][e]['weight'] = graph[b.val][a.val][e].get('weight', 0)+2
-                graph[a.val][b.val][e]['color'] = graph[b.val][a.val][e]['color'] = i
+                if do_color: 
+                    graph[a.val][b.val][e]['color'] = graph[b.val][a.val][e]['color'] = base_colors[num_colors%len(base_colors)]
+                    used_edges.add((a.val,b.val,e))
+                    graph[a.val][b.val][e]['weight'] = 40
+                    graph[b.val][a.val][e]['weight'] = 40
+                else: 
+                    graph[a.val][b.val][e]['color'] = graph[b.val][a.val][e]['color'] = 'black'
             except:
                 continue                
 
@@ -177,11 +193,11 @@ if __name__ == "__main__":
     ax = fig.add_subplot()
     pos = nx.circular_layout(graph)
     nx.draw(graph, pos, with_labels=True, ax=ax)
-    for edge in tqdm(graph.edges(data=True)):
+    for edge in tqdm(graph.edges(data=True)):  
         if 'weight' not in edge[2]: continue
         weight = edge[2]['weight']
         color = edge[2]['color']
-        index = color % len(base_colors)
-        nx.draw_networkx_edges(graph, pos, edgelist=[edge], width=weight, ax=ax, edge_color=[base_colors[index]])
+        options = {'connectionstyle':'arc3,rad=0.2', 'arrowsize':100, 'width':weight, 'ax':ax, 'edge_color':[color]}
+        nx.draw_networkx_edges(graph, pos, edgelist=[edge], **options)
     fig.savefig(args.graph_vis_file)
     print(args.graph_vis_file)
