@@ -1,7 +1,7 @@
 import argparse
 import pickle
 import numpy as np
-from utils.graph import *
+from utils import *
 import networkx as nx
 import torch.nn as nn
 import torch
@@ -25,12 +25,18 @@ class DiffusionProcess:
     - descend the side chain if not visited the leaf yet
     - ascend where it came from if visited the leaf already
     """
-    def __init__(self, dag, lookup, side_chains=False, **diffusion_args):
+    def __init__(self, dag, lookup, side_chains=False, split=False, **diffusion_args):
         self.lookup = lookup
         self.dag = dag
         self.side_chains = side_chains
         self.main_chain = []
+        self.split = split
         self.reset()
+        if not self.split:
+            res = []
+            self.dfs_walk(dag, res)
+            self.dfs_order = res
+            self.num_nodes = len(res)
 
 
     @staticmethod
@@ -44,6 +50,21 @@ class DiffusionProcess:
         return chain
 
 
+    @staticmethod
+    def dfs_walk(node, res):
+        res.append(node)
+        childs = sorted(node.children, key=lambda x: (not x[0].side_chain, x[0].id))
+        for c in childs:
+            side_chain = c[0].side_chain
+            ind = len(res)-1
+            if c[0].id:
+                DiffusionProcess.dfs_walk(c[0], res)
+                if side_chain:
+                    for i in range(len(res)-2, ind-1, -1):
+                        res.append(res[i])
+                    # print([a.val for a in res[:ind+1]], [a.val for a in res], "before after")
+
+
     
     def reset(self):
         self.t = 0
@@ -54,17 +75,21 @@ class DiffusionProcess:
 
     def step(self):
         new_frontier = defaultdict(float)
-        for cur, p in self.frontier.items():
-            if cur.side_chain:
-                if not self.side_chains: continue
-                if cur.children:
-                    breakpoint()
-                    pass
-                else:
-                    new_frontier[cur.parent[0]] += p
-            else:     
-                for a in cur.children:
-                    new_frontier[a[0]] += p/len(cur.children)
+        if self.split:
+            for cur, p in self.frontier.items():
+                if cur.side_chain:
+                    if not self.side_chains: continue
+                    if cur.children:
+                        breakpoint()
+                        pass
+                    else:
+                        new_frontier[cur.parent[0]] += p
+                else:     
+                    for a in cur.children:
+                        new_frontier[a[0]] += p/len(cur.children)
+        else:
+            new_frontier[self.dfs_order[(self.t+1)%self.num_nodes]] = 1.0
+            
                 
         new_state = np.zeros(len(self.state))
         for k, v in new_frontier.items():
@@ -152,49 +177,73 @@ class DiffusionGraph:
         assert probs.shape[0] == 1
         return probs/probs.sum()
     
+
+class L_grammar(nn.Module):
+    def __init__(self, N, diff_args):
+        super().__init__()
+        self.diff_args = diff_args
+        if diff_args['e_init']:
+            E = torch.as_tensor(nx.adjacency_matrix(G).toarray(), dtype=torch.float64)
+        else:
+            E = torch.zeros((N, N), dtype=torch.float64)    
+        self.E = E    
+        self.scale = nn.Parameter(torch.ones((1,), dtype=torch.float64))
+        self.W = nn.Parameter(E)
+        self.A = torch.as_tensor(E.clone().detach(), dtype=torch.float64)
+        self.context_layer = nn.Linear(N, N*N, dtype=torch.float64)
+        nn.init.zeros_(self.context_layer.weight)
+        nn.init.zeros_(self.context_layer.bias)
+                 
+
+    def forward(self, X, context, t):
+        if self.diff_args['combine_walks']:
+            L = torch.diag((self.W*self.A).sum(axis=0))-self.W # (N, N)
+        else:
+            if self.diff_args['context_L']:
+                adjust = self.context_layer(context).reshape((-1,)+self.W.shape)
+                W_new = adjust + self.W # (M, N, N)
+            else:
+                W_new = self.W
+            L = torch.diag_embed(torch.matmul(W_new,self.A[None]).sum(axis=-2))-W_new # (M, N, N)
+        
+        context = context*t/(t+1) + X/(t+1)              
+        L_T = self.scale * torch.transpose(L, -1,-2)
+        update = torch.matmul(X[...,None,:],L_T).squeeze()
+        return update, context
     
 
 def diffuse(graph, log_folder, **diff_args):
     G = graph.graph
-    print(f"state at 0: {graph.get_state()}")
+    print(f"state at 0: {graph.get_state()}")    
     N, M = len(G), 1 if diff_args['combine_walks'] else len(graph.processes)
-    if diff_args['e_init']:
-        E = torch.as_tensor(nx.adjacency_matrix(G).toarray(), dtype=torch.float64)
-    else:
-        E = torch.zeros((N, N), dtype=torch.float64)
-    scale = nn.Parameter(torch.ones((1,), dtype=torch.float64))
-    W = nn.Parameter(E)
-    A = torch.as_tensor(E.clone().detach(), dtype=torch.float64)
-    context_layer = nn.Linear(N, N*N, dtype=torch.float64)
-    nn.init.zeros_(context_layer.weight)
-    nn.init.zeros_(context_layer.bias)
-    loss_func = nn.MSELoss()   
-    opt = torch.optim.SGD([W, scale]+list(context_layer.parameters()), lr=diff_args['alpha'])
+    model = L_grammar(N, diff_args)
+    # if diff_args['e_init']:
+    #     E = torch.as_tensor(nx.adjacency_matrix(G).toarray(), dtype=torch.float64)
+    # else:
+    #     E = torch.zeros((N, N), dtype=torch.float64)
+    # scale = nn.Parameter(torch.ones((1,), dtype=torch.float64))
+    # W = nn.Parameter(E)
+    # A = torch.as_tensor(E.clone().detach(), dtype=torch.float64)
+    # context_layer = nn.Linear(N, N*N, dtype=torch.float64)
+    # nn.init.zeros_(context_layer.weight)
+    # nn.init.zeros_(context_layer.bias)
+    # loss_func = nn.MSELoss()   
+    # parameters = [W, scale]+list(context_layer.parameters())
+    opt = torch.optim.SGD(model.parameters(), lr=diff_args['alpha'])
     history = []
     T = 10
     for i in range(diff_args['num_epochs']):
         graph.reset()
         context = torch.zeros((M, N), dtype=torch.float64)
+        loss_func = nn.MSELoss()    
         for t in range(T):
             t_losses = []
-            opt.zero_grad()             
-            if diff_args['combine_walks']:
-                L = torch.diag((W*A).sum(axis=0))-W # (N, N)
-            else:
-                if diff_args['context_L']:
-                    adjust = context_layer(context).reshape((-1,)+W.shape)
-                    W_new = adjust + W # (M, N, N)
-                else:
-                    W_new = W
-                L = torch.diag_embed(torch.matmul(W_new,A[None]).sum(axis=-2))-W_new # (M, N, N)
-
+            opt.zero_grad()     
             X = torch.as_tensor(graph.get_state(not diff_args['combine_walks'])) # (M, N)
-            context = context*t/(t+1) + X/(t+1)
             graph.step()
-            Y = torch.as_tensor(graph.get_state(not diff_args['combine_walks'])) # (M, N)            
-            L_T = scale * torch.transpose(L, -1,-2)
-            update = torch.matmul(X[...,None,:],L_T).squeeze()
-            loss = loss_func(X+update, Y) # (1,N)+(1,N)(N,N) or (M,N)+(M,1,N)(M,N,N)
+            Y = torch.as_tensor(graph.get_state(not diff_args['combine_walks'])) # (M, N)                      
+            update, context = model(X, context, t)
+            loss = loss_func(X+update, Y) # (1,N)+(1,N)(N,N) or (M,N)+(M,1,N)(M,N,N)        
             t_losses.append(loss.item())
             loss.backward()
             opt.step()
@@ -214,10 +263,8 @@ def diffuse(graph, log_folder, **diff_args):
     plot_file = os.path.join(log_folder, 'L_loss.png')
     fig.savefig(plot_file)
     print(plot_file)
-
-    D = torch.diag((W*A).sum(axis=0))
-    L = (D-W).detach().numpy()
-    return L
+    torch.save(model.state_dict(), os.path.join(log_folder, 'ckpt.pt'))
+    return model
 
 
 def side_chain_grammar(index_lookup, log_folder):
@@ -280,20 +327,34 @@ def side_chain_grammar(index_lookup, log_folder):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--dags_file')
+    parser.add_argument('--data_file')
+    parser.add_argument('--motifs_folder')
+    parser.add_argument('--extra_label_path')    
     parser.add_argument('--predefined_graph_file')
     parser.add_argument('--log_folder')
     # diffusion args
     parser.add_argument('--side_chains', dest='diffusion_side_chains', action='store_true')
+    parser.add_argument('--split', dest='diffusion_split', action='store_true')
     parser.add_argument('--combine_walks', dest='diffusion_combine_walks', action='store_true')
     parser.add_argument('--e_init', dest='diffusion_e_init', action='store_true')
-    parser.add_argument('--context_L', dest='diffusion_context_L', action='store_false')
+    parser.add_argument('--context_L', dest='diffusion_context_L', action='store_true')
     parser.add_argument('--alpha', dest='diffusion_alpha', default=1e-4, type=float)
     parser.add_argument('--num_epochs', dest='diffusion_num_epochs', default=500, type=int)
 
     args = parser.parse_args()
+    lines = open(args.data_file).readlines()   
+    walks = set()
+    for i, l in enumerate(lines):        
+        walk = l.rstrip('\n').split(' ')[0]
+        walks.add(walk)
+    print(walks)
     diffusion_args = {k[len('diffusion_'):]: v for (k, v) in args.__dict__.items() if 'diffusion' in k}
 
     graph = nx.read_edgelist(args.predefined_graph_file, create_using=nx.MultiDiGraph)
+    predefined_graph = nx.read_edgelist(args.predefined_graph_file, create_using=nx.MultiDiGraph)
+    mols = load_mols(args.motifs_folder)
+    red_grps = annotate_extra(mols, args.extra_label_path)  
+    r_lookup = r_member_lookup(mols)
 
     num_nodes = len(graph.nodes())
     index_lookup = dict(zip(graph.nodes(), range(num_nodes)))
@@ -307,49 +368,139 @@ if __name__ == "__main__":
         root_node.parent = (leaf_node, e)
         root_node.dag_id = k
         dags.append(root_node)   
-
         
     
     graph = DiffusionGraph(dags, graph, **diffusion_args) 
     if args.log_folder:
-        L = pickle.load(open(os.path.join(args.log_folder, 'L.pkl'), 'rb'))
+        model = L_grammar(len(graph.graph), diffusion_args)
+        state = torch.load(os.path.join(args.log_folder, 'ckpt.pt'))
+        model.load_state_dict(state)
     else:        
         log_dir = os.path.join('logs/', f'logs-{time.time()}/')
         os.makedirs(log_dir, exist_ok=True)
         with open(os.path.join(log_dir, 'config.json'), 'w+') as f:
             json.dump(json.dumps(args.__dict__), f)        
-        L = diffuse(graph, log_dir, **diffusion_args)
-        pickle.dump(L, open(os.path.join(log_dir, 'L.pkl'), 'wb+'))
+        model = diffuse(graph, log_dir, **diffusion_args)
     
     graph.reset()
     G = graph.graph
     all_nodes = list(G.nodes())
     trajs = []
+    novel = []
 
-    if not args.diffusion_side_chains:
+    if args.diffusion_side_chains:
         layer = side_chain_grammar(index_lookup, args.log_folder)
 
-    for _ in range(1000):
+    N = len(G)
+    extract = lambda x: int(x.split('[')[0]) if '[' in x else int(x)
+    for _ in range(100):
         for n in G.nodes():
+            if ':' in n: continue
+            context = torch.zeros((1, N), dtype=torch.float64)
             start = graph.index_lookup[n]
-            state = np.zeros(len(G))
-            state[graph.index_lookup[n]] = 1.
+            state = torch.zeros((1, len(G)), dtype=torch.float64)
+            state[0, graph.index_lookup[n]] = 1.
+            traj = [str(start)]
+            t = 0
             after = -1
-            traj = [start]
-            while after != start:
-                state += L@state
-                state = np.where(state<0, 0, state)
-                state/=state.sum()
-                after = np.random.choice(len(state), p=state)
-                traj.append(after)
-                if traj[-1] == traj[-2]: break
-                state = np.zeros(len(G))
+            side_chains = {} # index in traj to side chain
+            good = False
+            while True:
+                update, context = model(state, context, t)
+                if not (state>=0).all():
+                    breakpoint()
+                state = torch.where(state+update>=0., state+update, 0.0)
+                state = state/state.sum(axis=-1)
+                t += 1
+                state_numpy = state.detach().flatten().numpy()
+                after = np.random.choice(len(state_numpy), p=state_numpy)    
+                if ':' in all_nodes[after]:
+                    ind = int(all_nodes[after].split(':')[-1])
+                    bad_ind = False
+                    grp = all_nodes[after].split(':')[0]
+                    prev_indices = [all_nodes[extract(x)] for x in traj if grp in all_nodes[extract(x)]]
+                    for prev_ind in prev_indices:
+                        if ':' in prev_ind and int(prev_ind.split(':')[-1]) > ind:
+                            bad_ind = True # P3:4 seen but we get 'P3:3'
+                    for i in range(ind-1, -1, -1):
+                        prev_ind_str = grp+(':'+str(i) if i else '')
+                        if prev_ind_str not in prev_indices:
+                            bad_ind = True # we get P3:3 but no P3:2 seen
+                    
+                    if bad_ind: break
+                
+                state = torch.zeros(len(G), dtype=torch.float64)
                 state[after] = 1.
+                if extract(traj[-1]) == after:
+                    traj.append(str(after))
+                    break
+                if after == start:
+                    traj.append(str(after))
+                    good = True
+                    break
+                # after indicates side chain, e.g. A, B, A good but A, B, C, A bad
+                def extract_sides(x):
+                    occur = []
+                    occur.append(x.split('[')[0])
+                    for a in x.split('[')[1][:-1].split(','):
+                        occur.append(a.split('->')[-1])
+                    return occur
+
+
+                occur = []
+                for x in traj:
+                    if '[' in occur:
+                        occur += extract_sides(x)
+                    else:
+                        occur.append(x)                
+                occur = np.array([str(after) in x for x in occur])
+                if occur.sum():
+                    if len(occur) == 1 or occur.sum() != 1: break
+                    if str(after) != traj[-2].split('[')[0]: break
+  
+                    if '[' in traj[-2]:
+                        traj[-2] = traj[-2][:-1]+',->'+str(traj[-1])+']'
+                    else:
+                        traj[-2] = f"{traj[-2]}[->{traj[-1]}]"
+                    traj.pop(-1)
+                else:
+                    traj.append(str(after))
             
-            if len(traj) > 1 and traj[-1] != traj[-2]:
-                trajs.append(traj)
+            if len(traj) > 1 and good:
+                drop_colon = lambda x: x.split(':')[0]
+                name_traj = []
+                side_chain = False                
+                for x in traj:
+                    if '[' in x:
+                        side_chain = True
+                        side = x.split('[')[1][:-1]
+                        new_side = []
+                        for y in side.split(','):
+                            name = all_nodes[int(y[len('->'):])]
+                            new_side.append('->' + name.split(':')[0])
+                        side = ','.join(new_side)                        
+                        c = all_nodes[int(drop_colon(x.split('[')[0]))]+'['+side+']'
+                    else:
+                        c = all_nodes[int(x)]
+                        if ':' in c:
+                            c = drop_colon(c)
+                    
+                    name_traj.append(c)
+                
+                assert len(traj) == len(name_traj)
+
+                try:
+                    verify_walk(r_lookup, predefined_graph, name_traj)
+                    name_traj = '->'.join(name_traj)
+                    trajs.append(name_traj)
+                    print(name_traj, "success")
+                    if name_traj not in walks:
+                        print(name_traj, "novel")
+                        walks.add(name_traj)
+                        novel.append(name_traj)
+                except:
+                    print(name_traj, "failed")
+                
     
-    trajs = sorted(trajs, key=lambda x: len(x))
-    trajs = [[all_nodes[x] for x in traj] for traj in trajs]
-    print(trajs)
+    print("novel", sorted(novel, key=lambda x:'[' in x))
     
