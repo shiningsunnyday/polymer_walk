@@ -9,7 +9,8 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import time
 import json
-from torch.distributions import Categorical
+from copy import deepcopy
+from torch_geometric.nn.conv import GINEConv
 
 
 class DiffusionProcess:
@@ -212,6 +213,24 @@ class L_grammar(nn.Module):
         return update, context
     
 
+class Predictor(nn.Module):
+    def __init__(self, hidden_dim, num_layers):
+        super().__init__()
+        mlp = nn.Sequential(nn.Linear(hidden_dim, hidden_dim), 
+                            nn.ReLU(), 
+                            nn.Linear(hidden_dim, hidden_dim))
+        self.out_mlp = nn.Linear(hidden_dim, 1)
+        self.gnn = GINEConv(mlp, edge_dim=1)
+        self.num_layers = num_layers
+
+    
+
+    def forward(self, X, edge_index, edge_attr):
+        for _ in range(self.num_layers):
+            X = self.gnn(X, edge_index, edge_attr)
+        prop = self.out_mlp(X.sum(axis=0))          
+        return prop    
+
 def diffuse(graph, log_folder, **diff_args):
     G = graph.graph
     print(f"state at 0: {graph.get_state()}")    
@@ -229,7 +248,7 @@ def diffuse(graph, log_folder, **diff_args):
     # nn.init.zeros_(context_layer.bias)
     # loss_func = nn.MSELoss()   
     # parameters = [W, scale]+list(context_layer.parameters())
-    opt = torch.optim.SGD(model.parameters(), lr=diff_args['alpha'])
+    opt = torch.optim.Adam(model.parameters(), lr=diff_args['alpha'])
     history = []
     T = 10
     for i in range(diff_args['num_epochs']):
@@ -251,18 +270,19 @@ def diffuse(graph, log_folder, **diff_args):
 
         print(f"epoch {i} loss: {np.mean(t_losses)}")
         history.append(np.mean(t_losses))
-
-    fig = plt.Figure()
-    ax = fig.add_subplot(1,1,1)
-    ax.plot(history)
-    ax.text(0, min(history), "{}".format(min(history)))
-    ax.axhline(y=min(history), color='red')
-    ax.set_title(f"Loss over {diff_args['num_epochs']} epochs, {T} steps each")
-    ax.set_ylabel(f"MSE Loss of X^t")
-    ax.set_xlabel('(Epoch, t)')
-    plot_file = os.path.join(log_folder, 'L_loss.png')
-    fig.savefig(plot_file)
-    print(plot_file)
+        
+        if i % 1000: continue
+        fig = plt.Figure()
+        ax = fig.add_subplot(1,1,1)
+        ax.plot(history)
+        ax.text(0, min(history), "{}".format(min(history)))
+        ax.axhline(y=min(history), color='red')
+        ax.set_title(f"Loss over {diff_args['num_epochs']} epochs, {T} steps each")
+        ax.set_ylabel(f"MSE Loss of X^t")
+        ax.set_xlabel('(Epoch, t)')
+        plot_file = os.path.join(log_folder, 'L_loss.png')
+        fig.savefig(plot_file)
+        print(plot_file)
     torch.save(model.state_dict(), os.path.join(log_folder, 'ckpt.pt'))
     return model
 
@@ -359,6 +379,7 @@ if __name__ == "__main__":
     num_nodes = len(graph.nodes())
     index_lookup = dict(zip(graph.nodes(), range(num_nodes)))
     data = pickle.load(open(args.dags_file, 'rb'))
+    data_copy = deepcopy(data)
     dags = []        
     for k, v in data.items():
         grps, root_node, conn = v        
@@ -367,14 +388,23 @@ if __name__ == "__main__":
         root_node, leaf_node, e = conn[-2]
         root_node.parent = (leaf_node, e)
         root_node.dag_id = k
-        dags.append(root_node)   
+        dags.append(root_node)
         
-    
+
     graph = DiffusionGraph(dags, graph, **diffusion_args) 
+    G = graph.graph
+    all_nodes = list(G.nodes())
     if args.log_folder:
         model = L_grammar(len(graph.graph), diffusion_args)
         state = torch.load(os.path.join(args.log_folder, 'ckpt.pt'))
         model.load_state_dict(state)
+        E = model.E
+        E_dic = defaultdict(dict)
+        for i in range(E.shape[0]):
+            for j in range(E.shape[1]):
+                a, b = all_nodes[i], all_nodes[j]
+                E_dic[a][b] = E[i][j].item()
+        json.dump(E_dic, open(os.path.join(args.log_folder, 'E.json'), 'w+'))
     else:        
         log_dir = os.path.join('logs/', f'logs-{time.time()}/')
         os.makedirs(log_dir, exist_ok=True)
@@ -383,8 +413,6 @@ if __name__ == "__main__":
         model = diffuse(graph, log_dir, **diffusion_args)
     
     graph.reset()
-    G = graph.graph
-    all_nodes = list(G.nodes())
     trajs = []
     novel = []
 
@@ -392,8 +420,7 @@ if __name__ == "__main__":
         layer = side_chain_grammar(index_lookup, args.log_folder)
 
     N = len(G)
-    extract = lambda x: int(x.split('[')[0]) if '[' in x else int(x)
-    for _ in range(100):
+    for _ in range(1000):
         for n in G.nodes():
             if ':' in n: continue
             context = torch.zeros((1, N), dtype=torch.float64)
@@ -490,17 +517,31 @@ if __name__ == "__main__":
                 assert len(traj) == len(name_traj)
 
                 try:
-                    verify_walk(r_lookup, predefined_graph, name_traj)
+                    root, edge_conn = verify_walk(r_lookup, predefined_graph, name_traj)
                     name_traj = '->'.join(name_traj)
                     trajs.append(name_traj)
                     print(name_traj, "success")
                     if name_traj not in walks:
                         print(name_traj, "novel")
                         walks.add(name_traj)
-                        novel.append(name_traj)
+                        novel.append((name_traj, root, edge_conn))
                 except:
                     print(name_traj, "failed")
                 
-    
-    print("novel", sorted(novel, key=lambda x:'[' in x))
+
+    all_walks = {}
+    write_conn = lambda conn: [(str(a.id), str(b.id), a.val, b.val, str(e), predefined_graph[a.val][b.val][e]) for (a,b,e) in conn]
+    all_walks['old'] = list(data_copy.values())
+    novel = sorted(novel, key=lambda x:len(x[2]))
+    all_walks['novel'] = novel
+    with open(os.path.join(args.log_folder, 'novel.txt'), 'w+') as f:
+        for n in novel:
+            f.write(n[0]+'\n')
+
+    # pickle.dump(novel, open(os.path.join(args.logs_folder, 'novel.pkl', 'wb+')))
+
+    all_walks['old'] = [write_conn(x[-1]) for x in all_walks['old']]
+    all_walks['novel'] = [write_conn(x[-1]) for x in all_walks['novel']]
+    print("novel", novel)
+    json.dump(all_walks, open(os.path.join(args.log_folder, 'all_dags.json'), 'w+'))
     

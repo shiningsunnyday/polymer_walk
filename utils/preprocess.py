@@ -2,6 +2,7 @@ import os
 from rdkit import Chem
 from rdkit.Chem import Draw
 from collections import defaultdict
+import re
 
 
 def name_group(m):

@@ -7,6 +7,7 @@ from utils import *
 from tqdm import tqdm
 import pickle
 import re
+import json
 import matplotlib.colors as mcolors
 
 base_colors = list(mcolors.TABLEAU_COLORS.values())
@@ -18,6 +19,7 @@ if __name__ == "__main__":
     parser.add_argument('--extra_label_path')    
     parser.add_argument('--data_file')
     parser.add_argument('--predefined_graph_file')
+    parser.add_argument('--trained_E_file')
     parser.add_argument('--graph_vis_file')
     parser.add_argument('--out_path', required=False)
     args = parser.parse_args()
@@ -25,14 +27,14 @@ if __name__ == "__main__":
     red_grps = annotate_extra(mols, args.extra_label_path)    
     graph = nx.read_edgelist(args.predefined_graph_file, create_using=nx.MultiDiGraph)
     lines = open(args.data_file).readlines()    
-    r_lookup = r_member_lookup(mols)
-    
+    r_lookup = r_member_lookup(mols)    
+    E_trained = json.load(open(args.trained_E_file, 'r'))
     dags = {}
     used_edges = set()
     num_colors = 0
     for i, l in enumerate(lines):        
-        walk = l.rstrip('\n')      
-        grps = extract_chain(walk) 
+        walk = l.rstrip('\n').split(' ')[0]
+        grps = extract_chain(walk)
         print(f"walk: {walk}, grps: {grps}")
         try:             
             root, conn = verify_walk(r_lookup, graph, grps)
@@ -55,8 +57,8 @@ if __name__ == "__main__":
                 if do_color: 
                     graph[a.val][b.val][e]['color'] = graph[b.val][a.val][e]['color'] = base_colors[num_colors%len(base_colors)]
                     used_edges.add((a.val,b.val,e))
-                    graph[a.val][b.val][e]['weight'] = 40
-                    graph[b.val][a.val][e]['weight'] = 40
+                    graph[a.val][b.val][e]['weight'] = E_trained[a.val][b.val]*100 if args.trained_E_file else 40
+                    graph[b.val][a.val][e]['weight'] = E_trained[b.val][a.val]*100 if args.trained_E_file else 40
                 else: 
                     graph[a.val][b.val][e]['color'] = graph[b.val][a.val][e]['color'] = 'black'
             except:

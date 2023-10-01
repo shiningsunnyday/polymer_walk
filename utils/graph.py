@@ -109,7 +109,7 @@ def red_isomorphic(m1, m2, r_grp_1, r_grp_2):
         for b1 in b1s:
             if check_isomorphic(mols[m1-1], mols[m2-1], r_grp_1+b1, b2+r_grp_2):
                 if connected(mols[m1-1], r_grp_1+b1) and connected(mols[m2-1], r_grp_2+b2):
-                    return [r_grp_1+b1, b2+r_grp_2]
+                    return [r_grp_1, b1, b2, r_grp_2] # r_grp_1 <-> b2
     return res
 
 
@@ -147,7 +147,12 @@ def extract_chain(walk):
         if '#' in res[i]:
             res[i] = res[i].replace('#', side_chains[j])
             j += 1
-    return res    
+    return res   
+
+
+def extract(x):
+    return int(x.split('[')[0]) if '[' in x else int(x)
+
 
 def search_walk(i, walk, graph, cur):
     if i == len(walk)-1: return cur

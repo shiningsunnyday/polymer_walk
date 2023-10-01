@@ -30,8 +30,8 @@ if __name__ == "__main__":
     for (a, b), k in zip(pargs, res):
         if not k: continue
         for i, key in enumerate(k):
-            k1, k2 = key
-            G.add_edge(name_group(a), name_group(b), key=i, k1=k1, k2=k2)
+            r_grp_1, b1, b2, r_grp_2 = key
+            G.add_edge(name_group(a), name_group(b), key=i, r_grp_1=r_grp_1, b1=b1, b2=b2, r_grp_2=r_grp_2)
 
 
     
