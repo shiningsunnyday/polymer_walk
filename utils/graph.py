@@ -249,5 +249,4 @@ def verify_walk(r_lookup, graph, walk):
                 break
         if bad: raise
      
-    print("done")    
     return root, edge_conn

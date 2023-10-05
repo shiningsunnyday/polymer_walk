@@ -1,14 +1,16 @@
 import argparse
 import pickle
+import random
 import networkx as nx
 from utils.graph import *
-from diffusion import L_grammar, Predictor, DiffusionGraph, DiffusionProcess
+from diffusion import L_grammar, Predictor, DiffusionGraph, DiffusionProcess, sample_walk, process_good_traj
 import json
 import torch
 import time
-import numpy as np
 import torch.nn as nn
 import matplotlib.pyplot as plt
+from copy import deepcopy
+from sklearn.model_selection import train_test_split
 
 def walk_edge_weight(dag, graph, model, proc):
     N = len(graph.graph)
@@ -37,26 +39,9 @@ def walk_edge_weight(dag, graph, model, proc):
     return W_adj 
 
 
-def train(args, graph, all_dags, diffusion_args):
-    lines = open(args.walks_file).readlines()
-    props = []
-    dag_ids = [None for i in range(len(lines))]
-    dags = []    
-    for dag in all_dags:
-        dag_ids[dag.dag_id] = 1
-    for i, (dag_id, l) in enumerate(zip(dag_ids, lines)):
-        if dag_id == None: continue
-        prop = l.rstrip('\n').split(' ')[-1].split(',')
-        prop = list(map(lambda x: float(x) if x != '-' else None, prop))        
-        if prop[0]:
-            props.append(prop[0])
-            dags.append(dag)
-    
-    mean, std = np.mean(props), np.std(props)
-    with open(os.path.join(args.logs_folder, 'mean_and_std.txt'), 'w+') as f:
-        f.write(f"{mean},{std}\n")
-    norm_props = torch.FloatTensor([[(p-mean)/std] for p in props])
-
+def train(args, dags, graph, diffusion_args, norm_props, mol_feats):
+    dags_copy = deepcopy(dags)
+    dags_copy_train, dags_copy_test, norm_props_train, norm_props_test = train_test_split(dags_copy, norm_props, test_size=0.4, random_state=42)
     G = graph.graph  
     N = len(G)    
 
@@ -70,59 +55,123 @@ def train(args, graph, all_dags, diffusion_args):
         # Optimize E, theta with Loss(MLP(H_i), prop-values)
     
     # init EdgeConv GNN
-    hidden_dim = 16
-    num_layers = 5
-    predictor = Predictor(hidden_dim, num_layers)
+    predictor = Predictor(input_dim=args.input_dim, hidden_dim=args.hidden_dim, num_layers=args.num_layers, num_heads=2)
+    if args.predictor_ckpt:
+        state = torch.load(args.predictor_ckpt)
+        predictor.load_state_dict(state, strict=True)
+        for p in predictor.parameters():
+            p.requires_grad_(False)
     if args.update_grammar:
         all_params = list(model.parameters()) + list(predictor.parameters())
+        if args.predictor_ckpt:
+            all_params = list(model.parameters())
     else:
         all_params = list(predictor.parameters())
-    opt = torch.optim.Adam(all_params)
+    if args.opt == 'sgd':
+        opt = torch.optim.SGD(all_params, lr=1e-4)         
+    elif args.opt == 'adam':
+        opt = torch.optim.Adam(all_params)
+    else:
+        raise
     loss_func = nn.MSELoss()   
     history = []
+    train_history = []
     best_loss = float("inf")
-    for _ in range(args.num_epochs):        
+    print(args.logs_folder)
+    for epoch in range(args.num_epochs):        
         # compute edge control weighted adj matrix via model inference    
+        
         graph.reset()
-        for i in range(len(dags)):            
-            loss_history = []
-            W_adj = walk_edge_weight(dags[i], graph, model, graph.processes[i])
+        # random.shuffle(dags_copy)
+        train_loss_history = []
+        for i in range(len(dags_copy_train)):                        
+            W_adj = walk_edge_weight(dags_copy_train[i], graph, model, graph.lookup_process(dags_copy_train[i].dag_id))
             # GNN with edge weight
-            edge_index = W_adj.nonzero().T
-            edge_attr = W_adj.flatten()[W_adj.flatten()>0][:, None]
-            node_attr = torch.ones((W_adj.shape[0], hidden_dim), dtype=torch.float32)
+            node_attr, edge_index, edge_attr = W_to_attr(args, W_adj, mol_feats)            
             X = node_attr
-            try:
-                prop = predictor(X, edge_index, edge_attr)
-            except:
-                breakpoint()
-            
-            opt.zero_grad()        
-            loss = loss_func(prop, norm_props[i])
-            loss_history.append(loss.item())
+            prop = do_predict(predictor, X, edge_index, edge_attr)                          
+            if i % args.num_accumulation_steps == 1 % args.num_accumulation_steps: opt.zero_grad()
+            loss = loss_func(prop, norm_props_train[i])            
+            train_loss_history.append(loss.item())     
             loss.backward()
-            opt.step()
+            if i % args.num_accumulation_steps == 0: 
+                opt.step()
+
+        loss_history = []
+        with torch.no_grad():
+            for i in range(len(dags_copy_test)):                        
+                W_adj = walk_edge_weight(dags_copy_test[i], graph, model, graph.lookup_process(dags_copy_test[i].dag_id))
+                # GNN with edge weight
+                node_attr, edge_index, edge_attr = W_to_attr(args, W_adj, mol_feats)            
+                X = node_attr
+                prop = do_predict(predictor, X, edge_index, edge_attr)                          
+                loss = loss_func(prop, norm_props_test[i])            
+                loss_history.append(loss.item())                   
+
 
         if np.mean(loss_history) < best_loss:
             best_loss = np.mean(loss_history)
+            print(f"best_loss epoch {epoch}", best_loss)
             torch.save(predictor.state_dict(), os.path.join(args.logs_folder, f'predictor_ckpt_{best_loss}.pt'))
             if args.update_grammar:
                 torch.save(model.state_dict(), os.path.join(args.logs_folder, f'grammar_ckpt_{best_loss}.pt'))
             
         history.append(np.mean(loss_history))
+        train_history.append(np.mean(train_loss_history))
         fig_path = os.path.join(args.logs_folder, 'predictor_loss.png')
         fig = plt.Figure()
         ax = fig.add_subplot(1,1,1)
-        ax.plot(np.arange(len(history))+1, history)
-        ax.text(0, min(history), "{}".format(min(history)))
+        ax.plot(np.arange(len(history))+1, history, label='test loss')
+        ax.plot(np.arange(len(train_history))+1, train_history, label='train loss')
+        ax.text(0, min(history), "{}:.3f".format(min(history)))
         ax.axhline(y=min(history), color='red')
         ax.set_title(f"Prediction loss")
         ax.set_ylabel(f"MSE Loss")
         ax.set_xlabel('Epoch')
+        ax.legend()
         fig.savefig(fig_path)  
 
     return model, predictor      
 
+
+def preprocess_data(all_dags, args, logs_folder):
+    lines = open(args.walks_file).readlines()
+    props = []
+    dag_ids = {}
+    dags = []    
+    for dag in all_dags:
+        dag_ids[dag.dag_id] = dag
+    for i, l in enumerate(lines):
+        if i not in dag_ids: continue
+        prop = l.rstrip('\n').split(' ')[-1].split(',')
+        prop = list(map(lambda x: float(x) if x != '-' else None, prop))        
+        if prop[0] and prop[1]:
+            props.append([prop[0],prop[1]])
+            dags.append(dag_ids[i])
+    
+    props = np.array(props)
+    mean, std = np.mean(props,axis=0,keepdims=True), np.std(props,axis=0,keepdims=True)    
+    with open(os.path.join(logs_folder, 'mean_and_std.txt'), 'w+') as f:
+        for i in range(props.shape[-1]):                
+            f.write(f"{mean[0,i]},{std[0,i]}\n")
+    
+    norm_props = torch.FloatTensor((props-mean)/std)  
+    return props, norm_props, dags  
+
+
+def do_predict(predictor, X, edge_index, edge_attr):
+    # try modifying X based on edge_attr
+    return predictor(X, edge_index, edge_attr)    
+
+
+def W_to_attr(args, W_adj, mol_feats):
+    edge_index = W_adj.nonzero().T
+    edge_attr = W_adj.flatten()[W_adj.flatten()>0][:, None]    
+    if args.mol_feat == 'W':
+        node_attr = W_adj
+    else:
+        node_attr = mol_feats
+    return node_attr, edge_index, edge_attr
 
 
 def main(args):
@@ -136,6 +185,7 @@ def main(args):
 
     # in: graph G, n walks, m groups, F, f, E edge weights
     data = pickle.load(open(args.dags_file, 'rb'))    
+    data_copy = deepcopy(data)
     dags = []
     for k, v in data.items():
         grps, root_node, conn = v
@@ -151,27 +201,51 @@ def main(args):
     graph = nx.read_edgelist(args.predefined_graph_file, create_using=nx.MultiDiGraph)
     graph = DiffusionGraph(dags, graph, **diffusion_args)     
     G = graph.graph
-    N = len(G)
-    hidden_dim = 16
-    if args.predictor_file and args.grammar_file:        
+    N = len(G)    
+    mols = load_mols(args.motifs_folder)
+    red_grps = annotate_extra(mols, args.extra_label_path)    
+    r_lookup = r_member_lookup(mols) 
+
+    if args.mol_feat == 'fp':
+        feat_lookup = {}
+        for i in range(1,98):
+            feat_lookup[name_group(i)] = mol2fp(mols[i-1])[0]
+        mol_feats = np.zeros((len(G), 2048), dtype=np.float32)
+        for n in G.nodes():
+            ind = graph.index_lookup[n]
+            mol_feats[ind] = feat_lookup[n.split(':')[0]]
+    elif args.mol_feat == 'one_hot':
+        mol_feats = np.eye(len(G), dtype=np.float32)
+    elif args.mol_feat == 'ones':
+        mol_feats = np.ones((len(G), args.input_dim), dtype=np.float32)
+    elif args.mol_feat == 'W':
+        mol_feats = torch.zeros((len(G), len(G)))
+    else:
+        raise
+
+    
+    setattr(args, 'input_dim', len(mol_feats[0]))
+
+    if args.predictor_file and args.grammar_file:    
+        setattr(args, 'logs_folder', os.path.dirname(args.predictor_file))            
         model = L_grammar(N, diffusion_args)
         state = torch.load(args.grammar_file)
         model.load_state_dict(state)
-        predictor = Predictor(hidden_dim=16, num_layers=5)
+        predictor = Predictor(input_dim=args.input_dim, hidden_dim=args.hidden_dim, num_layers=args.num_layers, num_heads=2)
         state = torch.load(os.path.join(args.predictor_file))
-        predictor.load_state_dict(state)        
+        predictor.load_state_dict(state)  
+        props, norm_props, dags = preprocess_data(dags, args, os.path.dirname(args.predictor_file))      
     else:    
         predictor_path = os.path.join(args.grammar_folder,f'predictor_{time.time()}')
         os.makedirs(predictor_path, exist_ok=True)
         setattr(args, 'logs_folder', predictor_path)
         with open(os.path.join(predictor_path, 'config.json'), 'w+') as f:
-            json.dump(json.dumps(args.__dict__), f)            
-        model, predictor = train(args, graph, dags, diffusion_args)
+            json.dump(json.dumps(args.__dict__), f)  
+
+        props, norm_props, dags = preprocess_data(dags, args, args.logs_folder)            
+        model, predictor = train(args, dags, graph, diffusion_args, norm_props, mol_feats)
 
     all_nodes = list(G.nodes())  
-    mols = load_mols(args.motifs_folder)
-    red_grps = annotate_extra(mols, args.extra_label_path)    
-    r_lookup = r_member_lookup(mols) 
     predefined_graph = nx.read_edgelist(args.predefined_graph_file, create_using=nx.MultiDiGraph)    
     graph.reset()
     trajs = []
@@ -180,133 +254,111 @@ def main(args):
     walks = set()
     for i, l in enumerate(lines):        
         walk = l.rstrip('\n').split(' ')[0]
-        walks.add(walk)     
-    for _ in range(1000):
-        for n in G.nodes():
-            if ':' in n: continue
-            context = torch.zeros((1, N), dtype=torch.float64)
-            start = graph.index_lookup[n]
-            state = torch.zeros((1, len(G)), dtype=torch.float64)
-            state[0, graph.index_lookup[n]] = 1.
-            traj = [str(start)]
-            t = 0
-            after = -1
-            good = False
-            while True:
-                update, context = model(state, context, t)
-                if not (state>=0).all():
-                    breakpoint()
-                state = torch.where(state+update>=0., state+update, 0.0)
-                state = state/state.sum(axis=-1)
-                t += 1
-                state_numpy = state.detach().flatten().numpy()
-                after = np.random.choice(len(state_numpy), p=state_numpy)    
-                if ':' in all_nodes[after]:
-                    ind = int(all_nodes[after].split(':')[-1])
-                    bad_ind = False
-                    grp = all_nodes[after].split(':')[0]
-                    prev_indices = [all_nodes[extract(x)] for x in traj if grp in all_nodes[extract(x)]]
-                    for prev_ind in prev_indices:
-                        if ':' in prev_ind and int(prev_ind.split(':')[-1]) > ind:
-                            bad_ind = True # P3:4 seen but we get 'P3:3'
-                    for i in range(ind-1, -1, -1):
-                        prev_ind_str = grp+(':'+str(i) if i else '')
-                        if prev_ind_str not in prev_indices:
-                            bad_ind = True # we get P3:3 but no P3:2 seen
-                    
-                    if bad_ind: break
-                
-                state = torch.zeros(len(G), dtype=torch.float64)
-                state[after] = 1.
-                if extract(traj[-1]) == after:
-                    traj.append(str(after))
-                    break
-                if after == start:
-                    traj.append(str(after))
-                    good = True
-                    break
-                # after indicates side chain, e.g. A, B, A good but A, B, C, A bad
-                def extract_sides(x):
-                    occur = []
-                    occur.append(x.split('[')[0])
-                    for a in x.split('[')[1][:-1].split(','):
-                        occur.append(a.split('->')[-1])
-                    return occur
-
-
-                occur = []
-                for x in traj:
-                    if '[' in occur:
-                        occur += extract_sides(x)
-                    else:
-                        occur.append(x)                
-                occur = np.array([str(after) in x for x in occur])
-                if occur.sum():
-                    if len(occur) == 1 or occur.sum() != 1: break
-                    if str(after) != traj[-2].split('[')[0]: break
-  
-                    if '[' in traj[-2]:
-                        traj[-2] = traj[-2][:-1]+',->'+str(traj[-1])+']'
-                    else:
-                        traj[-2] = f"{traj[-2]}[->{traj[-1]}]"
-                    traj.pop(-1)
-                else:
-                    traj.append(str(after))
+        walks.add(walk)
+    new_novel = 1
+    while len(novel) < args.num_generate_samples and new_novel:
+        print(f"add {new_novel} samples, now {len(novel)} novel samples")
+        new_novel = 0
+        for _ in range(100):
+            for n in G.nodes():
+                if ':' in n: continue
+                traj, good = sample_walk(n, G, graph, model, all_nodes)                
+                if len(traj) > 1 and good:
+                    name_traj, side_chain = process_good_traj(traj, all_nodes)  
+                    assert len(traj) == len(name_traj)
+                    try:        
+                        root, edge_conn = verify_walk(r_lookup, predefined_graph, name_traj)                           
+                        name_traj = '->'.join(name_traj)
+                        trajs.append(name_traj)
+                        # print(name_traj, "success")
+                        if name_traj not in walks:
+                            print(name_traj, "novel")
+                            walks.add(name_traj)                        
+                            proc = DiffusionProcess(root, graph.index_lookup, **diffusion_args)
+                            W_adj = walk_edge_weight(root, graph, model, proc)
+                            node_attr, edge_index, edge_attr = W_to_attr(args, W_adj, mol_feats)
+                            X = node_attr
+                            prop = do_predict(predictor, X, edge_index, edge_attr)
+                            print("predicted prop", prop)    
+                            novel.append((name_traj, root, edge_conn, prop.detach().numpy()))                    
+                            new_novel += 1
+                    except:
+                        pass
             
-            if len(traj) > 1 and good:
-                drop_colon = lambda x: x.split(':')[0]
-                name_traj = []
-                side_chain = False                
-                for x in traj:
-                    if '[' in x:
-                        side_chain = True
-                        side = x.split('[')[1][:-1]
-                        new_side = []
-                        for y in side.split(','):
-                            name = all_nodes[int(y[len('->'):])]
-                            new_side.append('->' + name.split(':')[0])
-                        side = ','.join(new_side)                        
-                        c = all_nodes[int(drop_colon(x.split('[')[0]))]+'['+side+']'
-                    else:
-                        c = all_nodes[int(x)]
-                        if ':' in c:
-                            c = drop_colon(c)
-                    
-                    name_traj.append(c)
-                
-                assert len(traj) == len(name_traj)
+    orig_preds = []    
+    graph.reset()
+    loss_history = []
+    for i, dag in enumerate(dags):
+        W_adj = walk_edge_weight(dag, graph, model, graph.lookup_process(dag.dag_id))
+        node_attr, edge_index, edge_attr = W_to_attr(args, W_adj, mol_feats)
+        X = node_attr
+        prop = do_predict(predictor, X, edge_index, edge_attr)           
+        loss_history.append(nn.MSELoss()(prop, norm_props[i]).item())
+        prop_npy = prop.detach().numpy()
+        orig_preds.append(prop_npy)
 
-                try:        
-                    root, edge_conn = verify_walk(r_lookup, predefined_graph, name_traj)                           
-                    name_traj = '->'.join(name_traj)
-                    trajs.append(name_traj)
-                    print(name_traj, "success")
-                    if name_traj not in walks:
-                        print(name_traj, "novel")
-                        walks.add(name_traj)                        
-                        proc = DiffusionProcess(root, graph.index_lookup, **diffusion_args)
-                        W_adj = walk_edge_weight(root, graph, model, proc)
-                        edge_index = W_adj.nonzero().T
-                        edge_attr = W_adj.flatten()[W_adj.flatten()>0][:, None]
-                        node_attr = torch.ones((W_adj.shape[0], hidden_dim), dtype=torch.float32)
-                        X = node_attr
-                        prop = predictor(X, edge_index, edge_attr)
-                        print("predicted prop", prop)    
+    print(np.mean(loss_history))
 
-                        novel.append((name_traj, root, edge_conn, prop.item()))                    
-                except:
-                    print(name_traj, "failed")
-        
     print("best novel samples")
+    mean = [] ; std = []
     with open(os.path.join(os.path.dirname(args.predictor_file), 'mean_and_std.txt')) as f:
-        mean, std = map(float, f.readline().split(','))
+        while True:
+            line = f.readline()
+            if not line: break
+            prop_mean, prop_std = map(float, line.split(','))
+            mean.append(prop_mean)
+            std.append(prop_std)
+            
 
-    with open(os.path.join(os.path.dirname(args.predictor_file), 'novel_props.txt'), 'w+') as f:
-        f.write("walk,prop_val\n")
-        for x in sorted(novel, key=lambda x: x[-1]):
-            unnorm_prop = x[-1]*std+mean
-            print(f"{x[0]},{unnorm_prop}")            
-            f.write(f"{x[0]},{unnorm_prop}\n")
+    out = []
+    out_2 = []
+    with open(os.path.join(args.logs_folder, 'novel_props.txt'), 'w+') as f:
+        f.write("walk,H_2,N_2,H_2/N_2\n")
+        for x in novel:
+            unnorm_prop = [x[-1][i]*std[i]+mean[i] for i in range(2)]
+            out.append(unnorm_prop[0])            
+            out_2.append(unnorm_prop[0]/unnorm_prop[1])
+            print(f"{x[0]},{','.join(list(map(str,unnorm_prop)))},{unnorm_prop[0]/unnorm_prop[1]}")
+            f.write(f"{x[0]},{','.join(list(map(str,unnorm_prop)))},{unnorm_prop[0]/unnorm_prop[1]}\n")
+    
+    orig_preds = [[orig_pred[i]*std[i]+mean[i] for i in range(2)] for orig_pred in orig_preds]
+    out, out_2, orig_preds = np.array(out), np.array(out_2), np.array(orig_preds)
+    props[:,1] = props[:,0]/props[:,1]
+    orig_preds[:,1] = orig_preds[:,0]/orig_preds[:,1]
+    p1, p2 = np.concatenate((out,props[:,0])), np.concatenate((out_2,props[:,1]))    
+    pareto_1, not_pareto_1, pareto_2, not_pareto_2 = pareto_or_not(p1, p2, len(out), min_better=False)
+    fig = plt.Figure()    
+    ax = fig.add_subplot(1, 1, 1)
+    ax.set_title('(H_2, H_2/N_2) of original vs novel monomers')
+    ax.scatter(out[not_pareto_1], out_2[not_pareto_1], c='b', label='predicted values of novel monomers')
+    ax.scatter(out[pareto_1], out_2[pareto_1], c='b', marker='v')    
+    ax.scatter(props[:,0][not_pareto_2], props[:,1][not_pareto_2], c='g', label='ground-truth values of original monomers')
+    ax.scatter(props[:,0][pareto_2], props[:,1][pareto_2], c='g', marker='v')
+    ax.scatter(orig_preds[:,0], orig_preds[:,1], c='r', label='predicted values of original monomers')
+    ax.set_xlabel('Permeability H2')
+    ax.set_ylabel('Selectivity H_2/N_2')
+    ax.set_ylim(ymin=0)
+    ax.legend()
+    ax.grid(True)    
+    fig.savefig(os.path.join(args.logs_folder, 'pareto.png'))
+    all_walks = {}
+
+    write_conn = lambda conn: [(str(a.id), str(b.id), a.val, b.val, str(e), predefined_graph[a.val][b.val][e]) for (a,b,e) in conn]
+    all_walks['old'] = list(data_copy.values())
+    novel = sorted(novel, key=lambda x:len(x[2]))
+    
+    with open(os.path.join(args.logs_folder, 'novel.txt'), 'w+') as f:
+        for n in novel:
+            f.write(n[0]+'\n')
+
+    all_walks['novel'] = [x[2] for x in novel]  
+    # pickle.dump(novel, open(os.path.join(args.logs_folder, 'novel.pkl', 'wb+')))
+    all_walks['old'] = [write_conn(x[-1]) for x in all_walks['old']]
+    all_walks['novel'] = [write_conn(x) for x in all_walks['novel']]
+    print("novel", novel)
+    json.dump(all_walks, open(os.path.join(args.logs_folder, 'all_dags.json'), 'w+'))
+
+                
     
 
 
@@ -319,9 +371,24 @@ if __name__ == "__main__":
     parser.add_argument('--walks_file')
     parser.add_argument('--grammar_file', help='if provided, sample new')
     parser.add_argument('--predictor_file', help='if provided, sample new')
+    parser.add_argument('--predictor_ckpt')
     parser.add_argument('--predefined_graph_file')
     parser.add_argument('--update_grammar', action='store_true')
+
+    # training params
     parser.add_argument('--num_epochs', type=int)
+    parser.add_argument('--lr', type=float, default=1e-3)
+    parser.add_argument('--num_accumulation_steps', type=int, default=1)
+    parser.add_argument('--opt', default='adam')
+
+    # model params
+    parser.add_argument('--mol_feat', type=str, choices=['fp', 'one_hot', 'ones', 'W'])
+    parser.add_argument('--hidden_dim', type=int, default=16)
+    parser.add_argument('--num_layers', type=int, default=5)
+
+    # sampling params
+    parser.add_argument('--num_generate_samples', type=int, default=100)
+
     args = parser.parse_args()    
      
     main(args)

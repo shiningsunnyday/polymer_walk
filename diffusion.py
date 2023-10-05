@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import time
 import json
 from copy import deepcopy
-from torch_geometric.nn.conv import GINEConv
+from torch_geometric.nn.conv import GINEConv, GINConv, GATConv
 
 
 class DiffusionProcess:
@@ -123,6 +123,13 @@ class DiffusionGraph:
         self.graph = graph
 
 
+    def lookup_process(self, dag_id):
+        for dag, proc in zip(self.dags, self.processes):
+            if dag.dag_id == dag_id:
+                return proc
+        raise
+
+
     def modify_graph(self, dags, graph):
         max_value_count = {}
         for i, dag in enumerate(dags):
@@ -214,22 +221,30 @@ class L_grammar(nn.Module):
     
 
 class Predictor(nn.Module):
-    def __init__(self, hidden_dim, num_layers):
+    def __init__(self, input_dim=16, hidden_dim=16, num_layers=5, num_heads=2):
         super().__init__()
-        mlp = nn.Sequential(nn.Linear(hidden_dim, hidden_dim), 
-                            nn.ReLU(), 
-                            nn.Linear(hidden_dim, hidden_dim))
-        self.out_mlp = nn.Linear(hidden_dim, 1)
-        self.gnn = GINEConv(mlp, edge_dim=1)
+        self.num_heads = num_heads
+        # assert input_dim == hidden_dim          
+        for i in range(1, num_layers+1):
+            if i > 1: input_dim = hidden_dim         
+            mlp = nn.Sequential(nn.Linear(input_dim, hidden_dim), 
+                nn.ReLU(), 
+                nn.Linear(hidden_dim, hidden_dim))             
+            # setattr(self, f"gnn_{i}", GATConv(in_channels=-1, out_channels=hidden_dim, edge_dim=1))
+            setattr(self, f"gnn_{i}", GINConv(mlp, edge_dim=1))
+        for i in range(1, num_heads+1):
+            setattr(self, f"out_mlp_{i}", nn.Linear(hidden_dim, 1))            
         self.num_layers = num_layers
-
+        
     
 
     def forward(self, X, edge_index, edge_attr):
-        for _ in range(self.num_layers):
-            X = self.gnn(X, edge_index, edge_attr)
-        prop = self.out_mlp(X.sum(axis=0))          
-        return prop    
+        for i in range(1, self.num_layers+1):
+            X = getattr(self, f"gnn_{i}")(X, edge_index)
+        props = [getattr(self, f"out_mlp_{i}")(X.sum(axis=0)) for i in range(1,self.num_heads+1)]
+        return torch.cat(props, dim=-1)
+    
+
 
 def diffuse(graph, log_folder, **diff_args):
     G = graph.graph
@@ -309,7 +324,7 @@ def side_chain_grammar(index_lookup, log_folder):
     X, y = torch.cat(X, dim=0), torch.tensor(y)
     print(X.shape, y.shape)
     loss_func = nn.CrossEntropyLoss()
-    opt = torch.optim.Adam(layer.parameters(), lr=1e-2)
+    opt = torch.optim.Adam(layer.parameters(), lr=1e-4)
     loss_min = float("inf")
     min_i = 0
     i = 0
@@ -343,25 +358,127 @@ def side_chain_grammar(index_lookup, log_folder):
     return layer
 
 
+def process_good_traj(traj, all_nodes):
+    drop_colon = lambda x: x.split(':')[0]
+    name_traj = []
+    side_chain = False                
+    for x in traj:
+        if '[' in x:
+            side_chain = True
+            side = x.split('[')[1][:-1]
+            new_side = []
+            for y in side.split(','):
+                name = all_nodes[int(y[len('->'):])]
+                new_side.append('->' + name.split(':')[0])
+            side = ','.join(new_side)                        
+            c = all_nodes[int(drop_colon(x.split('[')[0]))]+'['+side+']'
+        else:
+            c = all_nodes[int(x)]
+            if ':' in c:
+                c = drop_colon(c)
+        
+        name_traj.append(c)  
+    return name_traj, side_chain
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--dags_file')
-    parser.add_argument('--data_file')
-    parser.add_argument('--motifs_folder')
-    parser.add_argument('--extra_label_path')    
-    parser.add_argument('--predefined_graph_file')
-    parser.add_argument('--log_folder')
-    # diffusion args
-    parser.add_argument('--side_chains', dest='diffusion_side_chains', action='store_true')
-    parser.add_argument('--split', dest='diffusion_split', action='store_true')
-    parser.add_argument('--combine_walks', dest='diffusion_combine_walks', action='store_true')
-    parser.add_argument('--e_init', dest='diffusion_e_init', action='store_true')
-    parser.add_argument('--context_L', dest='diffusion_context_L', action='store_true')
-    parser.add_argument('--alpha', dest='diffusion_alpha', default=1e-4, type=float)
-    parser.add_argument('--num_epochs', dest='diffusion_num_epochs', default=500, type=int)
 
-    args = parser.parse_args()
+def sample_walk(n, G, graph, model, all_nodes):
+    N = len(G)     
+    context = torch.zeros((1, N), dtype=torch.float64)
+    start = graph.index_lookup[n]
+    state = torch.zeros((1, len(G)), dtype=torch.float64)
+    state[0, graph.index_lookup[n]] = 1.
+    traj = [str(start)]
+    t = 0
+    after = -1
+    good = False    
+    while True:
+        update, context = model(state, context, t)
+        if not (state>=0).all():
+            breakpoint()
+        state = torch.where(state+update>=0., state+update, 0.0)
+        state = state/state.sum(axis=-1)
+        t += 1
+        state_numpy = state.detach().flatten().numpy()
+        after = np.random.choice(len(state_numpy), p=state_numpy)    
+        if ':' in all_nodes[after]:
+            ind = int(all_nodes[after].split(':')[-1])
+            bad_ind = False
+            grp = all_nodes[after].split(':')[0]
+            prev_indices = [all_nodes[extract(x)] for x in traj if grp in all_nodes[extract(x)]]
+            for prev_ind in prev_indices:
+                if ':' in prev_ind and int(prev_ind.split(':')[-1]) > ind:
+                    bad_ind = True # P3:4 seen but we get 'P3:3'
+            for i in range(ind-1, -1, -1):
+                prev_ind_str = grp+(':'+str(i) if i else '')
+                if prev_ind_str not in prev_indices:
+                    bad_ind = True # we get P3:3 but no P3:2 seen
+            
+            if bad_ind: break
+        
+        state = torch.zeros(len(G), dtype=torch.float64)
+        state[after] = 1.
+        if extract(traj[-1]) == after:
+            traj.append(str(after))
+            break
+        if after == start:
+            traj.append(str(after))
+            good = True
+            break
+        # after indicates side chain, e.g. A, B, A good but A, B, C, A bad
+        def extract_sides(x):
+            occur = []
+            occur.append(x.split('[')[0])
+            for a in x.split('[')[1][:-1].split(','):
+                occur.append(a.split('->')[-1])
+            return occur
+
+
+        occur = []
+        for x in traj:
+            if '[' in occur:
+                occur += extract_sides(x)
+            else:
+                occur.append(x)                
+        occur = np.array([str(after) in x for x in occur])
+        if occur.sum():
+            if len(occur) == 1 or occur.sum() != 1: break
+            if str(after) != traj[-2].split('[')[0]: break
+
+            if '[' in traj[-2]:
+                traj[-2] = traj[-2][:-1]+',->'+str(traj[-1])+']'
+            else:
+                traj[-2] = f"{traj[-2]}[->{traj[-1]}]"
+            traj.pop(-1)
+        else:
+            traj.append(str(after))
+
+    return traj, good
+
+
+def sample_walks(G, graph, walks, model, all_nodes, r_lookup, predefined_graph):       
+    novel = []
+    for _ in range(2):
+        for n in G.nodes():
+            if ':' in n: continue            
+            traj, good = sample_walk(n, G, graph, model, all_nodes)  
+            if len(traj) > 1 and good:
+                name_traj, side_chain = process_good_traj(traj, all_nodes)                
+                assert len(traj) == len(name_traj)
+
+                try:
+                    root, edge_conn = verify_walk(r_lookup, predefined_graph, name_traj)
+                    name_traj = '->'.join(name_traj)
+                    print(name_traj, "success")
+                    if name_traj not in walks:
+                        print(name_traj, "novel")
+                        walks.add(name_traj)
+                        novel.append((name_traj, root, edge_conn))
+                except:
+                    print(name_traj, "failed")
+    return novel
+
+
+def main(args):
     lines = open(args.data_file).readlines()   
     walks = set()
     for i, l in enumerate(lines):        
@@ -413,121 +530,11 @@ if __name__ == "__main__":
         model = diffuse(graph, log_dir, **diffusion_args)
     
     graph.reset()
-    trajs = []
-    novel = []
 
     if args.diffusion_side_chains:
         layer = side_chain_grammar(index_lookup, args.log_folder)
 
-    N = len(G)
-    for _ in range(1000):
-        for n in G.nodes():
-            if ':' in n: continue
-            context = torch.zeros((1, N), dtype=torch.float64)
-            start = graph.index_lookup[n]
-            state = torch.zeros((1, len(G)), dtype=torch.float64)
-            state[0, graph.index_lookup[n]] = 1.
-            traj = [str(start)]
-            t = 0
-            after = -1
-            side_chains = {} # index in traj to side chain
-            good = False
-            while True:
-                update, context = model(state, context, t)
-                if not (state>=0).all():
-                    breakpoint()
-                state = torch.where(state+update>=0., state+update, 0.0)
-                state = state/state.sum(axis=-1)
-                t += 1
-                state_numpy = state.detach().flatten().numpy()
-                after = np.random.choice(len(state_numpy), p=state_numpy)    
-                if ':' in all_nodes[after]:
-                    ind = int(all_nodes[after].split(':')[-1])
-                    bad_ind = False
-                    grp = all_nodes[after].split(':')[0]
-                    prev_indices = [all_nodes[extract(x)] for x in traj if grp in all_nodes[extract(x)]]
-                    for prev_ind in prev_indices:
-                        if ':' in prev_ind and int(prev_ind.split(':')[-1]) > ind:
-                            bad_ind = True # P3:4 seen but we get 'P3:3'
-                    for i in range(ind-1, -1, -1):
-                        prev_ind_str = grp+(':'+str(i) if i else '')
-                        if prev_ind_str not in prev_indices:
-                            bad_ind = True # we get P3:3 but no P3:2 seen
-                    
-                    if bad_ind: break
-                
-                state = torch.zeros(len(G), dtype=torch.float64)
-                state[after] = 1.
-                if extract(traj[-1]) == after:
-                    traj.append(str(after))
-                    break
-                if after == start:
-                    traj.append(str(after))
-                    good = True
-                    break
-                # after indicates side chain, e.g. A, B, A good but A, B, C, A bad
-                def extract_sides(x):
-                    occur = []
-                    occur.append(x.split('[')[0])
-                    for a in x.split('[')[1][:-1].split(','):
-                        occur.append(a.split('->')[-1])
-                    return occur
-
-
-                occur = []
-                for x in traj:
-                    if '[' in occur:
-                        occur += extract_sides(x)
-                    else:
-                        occur.append(x)                
-                occur = np.array([str(after) in x for x in occur])
-                if occur.sum():
-                    if len(occur) == 1 or occur.sum() != 1: break
-                    if str(after) != traj[-2].split('[')[0]: break
-  
-                    if '[' in traj[-2]:
-                        traj[-2] = traj[-2][:-1]+',->'+str(traj[-1])+']'
-                    else:
-                        traj[-2] = f"{traj[-2]}[->{traj[-1]}]"
-                    traj.pop(-1)
-                else:
-                    traj.append(str(after))
-            
-            if len(traj) > 1 and good:
-                drop_colon = lambda x: x.split(':')[0]
-                name_traj = []
-                side_chain = False                
-                for x in traj:
-                    if '[' in x:
-                        side_chain = True
-                        side = x.split('[')[1][:-1]
-                        new_side = []
-                        for y in side.split(','):
-                            name = all_nodes[int(y[len('->'):])]
-                            new_side.append('->' + name.split(':')[0])
-                        side = ','.join(new_side)                        
-                        c = all_nodes[int(drop_colon(x.split('[')[0]))]+'['+side+']'
-                    else:
-                        c = all_nodes[int(x)]
-                        if ':' in c:
-                            c = drop_colon(c)
-                    
-                    name_traj.append(c)
-                
-                assert len(traj) == len(name_traj)
-
-                try:
-                    root, edge_conn = verify_walk(r_lookup, predefined_graph, name_traj)
-                    name_traj = '->'.join(name_traj)
-                    trajs.append(name_traj)
-                    print(name_traj, "success")
-                    if name_traj not in walks:
-                        print(name_traj, "novel")
-                        walks.add(name_traj)
-                        novel.append((name_traj, root, edge_conn))
-                except:
-                    print(name_traj, "failed")
-                
+    novel = sample_walks(G, graph, walks, model, all_nodes, r_lookup, predefined_graph)                
 
     all_walks = {}
     write_conn = lambda conn: [(str(a.id), str(b.id), a.val, b.val, str(e), predefined_graph[a.val][b.val][e]) for (a,b,e) in conn]
@@ -544,4 +551,25 @@ if __name__ == "__main__":
     all_walks['novel'] = [write_conn(x[-1]) for x in all_walks['novel']]
     print("novel", novel)
     json.dump(all_walks, open(os.path.join(args.log_folder, 'all_dags.json'), 'w+'))
-    
+        
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--dags_file')
+    parser.add_argument('--data_file')
+    parser.add_argument('--motifs_folder')
+    parser.add_argument('--extra_label_path')    
+    parser.add_argument('--predefined_graph_file')
+    parser.add_argument('--log_folder')
+    # diffusion args
+    parser.add_argument('--side_chains', dest='diffusion_side_chains', action='store_true')
+    parser.add_argument('--split', dest='diffusion_split', action='store_true')
+    parser.add_argument('--combine_walks', dest='diffusion_combine_walks', action='store_true')
+    parser.add_argument('--e_init', dest='diffusion_e_init', action='store_true')
+    parser.add_argument('--context_L', dest='diffusion_context_L', action='store_true')
+    parser.add_argument('--alpha', dest='diffusion_alpha', default=1e-4, type=float)
+    parser.add_argument('--num_epochs', dest='diffusion_num_epochs', default=500, type=int)
+
+    args = parser.parse_args()
+    main(args)
