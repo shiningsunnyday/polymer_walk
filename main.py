@@ -15,7 +15,8 @@ from sklearn.model_selection import train_test_split
 def walk_edge_weight(dag, graph, model, proc):
     N = len(graph.graph)
     walk_order = []
-    DiffusionProcess.dfs_walk(dag, walk_order)    
+    assert not proc.split
+    walk_order = proc.dfs_order
     context = torch.zeros((1, N), dtype=torch.float64)
     start_node_ind = graph.index_lookup[walk_order[0].val]
     prev_node_ind = start_node_ind
@@ -42,6 +43,18 @@ def walk_edge_weight(dag, graph, model, proc):
 def train(args, dags, graph, diffusion_args, norm_props, mol_feats):
     dags_copy = deepcopy(dags)
     dags_copy_train, dags_copy_test, norm_props_train, norm_props_test = train_test_split(dags_copy, norm_props, test_size=0.4, random_state=42)
+    all_procs = []
+
+    # data augmentation
+    for i in range(len(dags_copy_train)):
+        proc = graph.lookup_process(dags_copy_train[i].dag_id)
+        procs = [proc]
+        if args.augment_dfs:
+            for j in range(1, proc.total):
+                procs.append(DiffusionProcess(dags_copy_train[i], graph.index_lookup, dfs_seed=j, **graph.diffusion_args))    
+        all_procs.append(procs)
+
+
     G = graph.graph  
     N = len(G)    
 
@@ -84,17 +97,24 @@ def train(args, dags, graph, diffusion_args, norm_props, mol_feats):
         graph.reset()
         # random.shuffle(dags_copy)
         train_loss_history = []
-        for i in range(len(dags_copy_train)):                        
-            W_adj = walk_edge_weight(dags_copy_train[i], graph, model, graph.lookup_process(dags_copy_train[i].dag_id))
-            # GNN with edge weight
-            node_attr, edge_index, edge_attr = W_to_attr(args, W_adj, mol_feats)            
-            X = node_attr
-            prop = do_predict(predictor, X, edge_index, edge_attr)                          
-            if i % args.num_accumulation_steps == 1 % args.num_accumulation_steps: opt.zero_grad()
-            loss = loss_func(prop, norm_props_train[i])            
-            train_loss_history.append(loss.item())     
-            loss.backward()
-            if i % args.num_accumulation_steps == 0: 
+        for i in range(len(dags_copy_train)):            
+            procs = all_procs[i]
+            if i % args.num_accumulation_steps == 1 % args.num_accumulation_steps: opt.zero_grad()            
+            for proc in procs:
+                W_adj = walk_edge_weight(dags_copy_train[i], graph, model, proc)
+                # GNN with edge weight
+                node_attr, edge_index, edge_attr = W_to_attr(args, W_adj, mol_feats)            
+                X = node_attr
+                prop = do_predict(predictor, X, edge_index, edge_attr)                                          
+                loss = loss_func(prop, norm_props_train[i])            
+                train_loss_history.append(loss.item())     
+                loss.backward()
+            if args.augment_dfs:
+                assert args.num_accumulation_steps == 1
+                for p in all_params:
+                    if p.requires_grad:
+                        p.grad /= len(procs)
+            if i % args.num_accumulation_steps == 0:                 
                 opt.step()
 
         loss_history = []
@@ -170,7 +190,7 @@ def W_to_attr(args, W_adj, mol_feats):
     if args.mol_feat == 'W':
         node_attr = W_adj
     else:
-        node_attr = mol_feats
+        node_attr = torch.as_tensor(mol_feats)
     return node_attr, edge_index, edge_attr
 
 
@@ -198,6 +218,7 @@ def main(args):
 
     config_json = json.loads(json.load(open(os.path.join(args.grammar_folder,'config.json'),'r')))
     diffusion_args = {k[len('diffusion_'):]: v for (k, v) in config_json.items() if 'diffusion' in k}
+
     graph = nx.read_edgelist(args.predefined_graph_file, create_using=nx.MultiDiGraph)
     graph = DiffusionGraph(dags, graph, **diffusion_args)     
     G = graph.graph
@@ -367,13 +388,16 @@ if __name__ == "__main__":
     parser.add_argument('--motifs_folder')    
     parser.add_argument('--extra_label_path')    
     parser.add_argument('--grammar_folder')
-    parser.add_argument('--dags_file')
-    parser.add_argument('--walks_file')
     parser.add_argument('--grammar_file', help='if provided, sample new')
     parser.add_argument('--predictor_file', help='if provided, sample new')
     parser.add_argument('--predictor_ckpt')
-    parser.add_argument('--predefined_graph_file')
     parser.add_argument('--update_grammar', action='store_true')
+
+    # data params
+    parser.add_argument('--predefined_graph_file')    
+    parser.add_argument('--dags_file')
+    parser.add_argument('--walks_file')    
+    parser.add_argument('--augment_dfs', action='store_true')
 
     # training params
     parser.add_argument('--num_epochs', type=int)

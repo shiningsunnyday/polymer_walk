@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import time
 import json
 from copy import deepcopy
+from math import factorial
 from torch_geometric.nn.conv import GINEConv, GINConv, GATConv
 
 
@@ -26,40 +27,80 @@ class DiffusionProcess:
     - descend the side chain if not visited the leaf yet
     - ascend where it came from if visited the leaf already
     """
-    def __init__(self, dag, lookup, side_chains=False, split=False, **diffusion_args):
+    def __init__(self, dag, lookup, side_chains=False, split=False, dfs_seed=0, **diffusion_args):
         self.lookup = lookup
         self.dag = dag
         self.side_chains = side_chains
-        self.main_chain = []
+        self.main_chain = DiffusionProcess.compute_main_chain(dag)
+        self.child_nums = [len(self.side_childs(a)) for a in self.main_chain[:-1]]
+        self.total = np.prod([factorial(x) for x in self.child_nums])        
         self.split = split
+        self.dfs_seed = dfs_seed # 0 to X-1, where X := prod_(node in main chain) num_childs(node)
         self.reset()
         if not self.split:
-            res = []
-            self.dfs_walk(dag, res)
+            res = self.compute_dfs(dag)
             self.dfs_order = res
             self.num_nodes = len(res)
 
 
+    def compute_dfs(self, dag):        
+        res = []        
+        dfs_seed = self.dfs_seed
+        perm_map = {}
+        for i in range(len(self.child_nums)-1, -1, -1):
+            perm_idx = dfs_seed % factorial(self.child_nums[i])
+            perm = list(permutations(self.side_childs(self.main_chain[i])))[perm_idx]
+            perm_map[self.main_chain[i].id] = perm
+            dfs_seed //= factorial(self.child_nums[i])
+        assert dfs_seed == 0
+        self.dfs_walk(dag, res, perm_map)
+        return res
+
+
+    @staticmethod
+    def side_childs(a):
+        return [x for x in a.children if x[0].side_chain]        
+    
+
     @staticmethod
     def compute_main_chain(dag):
         chain = [dag]
+        i = 0
         while len(chain) == 1 or chain[-1].id:
-            for child, _ in chain[-1].children:
-                if child.side_chain: continue
-                chain.append(child)
-                break
+            i += 1
+            main_chain_child = False
+            for c in chain[-1].children:
+                if not c[0].side_chain:
+                    main_chain_child = True
+            if main_chain_child: # exists main chain child
+                for child, _ in chain[-1].children:
+                    if child.side_chain: continue
+                    chain.append(child)
+                    break
+            else:
+                chain.append(dag)
         return chain
 
 
     @staticmethod
-    def dfs_walk(node, res):
+    def dfs_walk(node, res, perm_map=None):
+        """
+        perm_map: dict(node: permutation of child indices)
+        """
         res.append(node)
-        childs = sorted(node.children, key=lambda x: (not x[0].side_chain, x[0].id))
+        childs = sorted(node.children, key=lambda x: (not x[0].side_chain, x[0].id)) # side chains first
+        if perm_map:
+            try:
+                ind = [c[0].side_chain for c in childs].index(False)
+            except:
+                ind = len(childs)        
+            if not node.side_chain: # reorder the children
+                childs[:ind] = perm_map[node.id]
         for c in childs:
             side_chain = c[0].side_chain
             ind = len(res)-1
             if c[0].id:
-                DiffusionProcess.dfs_walk(c[0], res)
+                DiffusionProcess.dfs_walk(c[0], res, perm_map)
                 if side_chain:
                     for i in range(len(res)-2, ind-1, -1):
                         res.append(res[i])
