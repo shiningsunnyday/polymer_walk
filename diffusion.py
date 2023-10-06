@@ -35,12 +35,42 @@ class DiffusionProcess:
         self.child_nums = [len(self.side_childs(a)) for a in self.main_chain[:-1]]
         self.total = np.prod([factorial(x) for x in self.child_nums])        
         self.split = split
-        self.dfs_seed = dfs_seed # 0 to X-1, where X := prod_(node in main chain) num_childs(node)
+        self.dfs_dir = dfs_seed >= 0
+        dfs_seed = abs(dfs_seed)
+        self.dfs_seed = dfs_seed % self.total # 0 to X-1, where X := prod_(node in main chain) num_childs(node)
         self.reset()
         if not self.split:
             res = self.compute_dfs(dag)
-            self.dfs_order = res
+            new_res = self.augment_walk_order(res, dfs_seed)
+            self.dfs_order = new_res
             self.num_nodes = len(res)
+        else:
+            raise
+
+
+    def augment_walk_order(self, res, dfs_seed):
+        # dfs_seed // self.total is which node to start in main chain
+        indices = []
+        i = 0
+        for j in range(len(res)):
+            if res[j] == self.main_chain[i]:
+                indices.append(j)
+                i += 1
+        new_res = []
+        start_node = dfs_seed//self.total
+        for step in range(len(indices)):
+            if self.dfs_dir:
+                start = (start_node+step)%len(indices)
+                end = (start_node+step+1)%len(indices)
+            else:
+                start = (start_node-step-1+len(indices))%len(indices)
+                end = (start_node-step+len(indices))%len(indices)            
+            if indices[end] < indices[start]:
+                new_res += (res[indices[start]:] + res[:indices[end]])
+            else:
+                new_res += res[indices[start]: indices[end]]
+
+        return new_res
 
 
     def compute_dfs(self, dag):        
@@ -267,14 +297,21 @@ class Predictor(nn.Module):
         self.num_heads = num_heads
         # assert input_dim == hidden_dim          
         for i in range(1, num_layers+1):
-            if i > 1: input_dim = hidden_dim         
-            mlp = nn.Sequential(nn.Linear(input_dim, hidden_dim), 
-                nn.ReLU(), 
-                nn.Linear(hidden_dim, hidden_dim))             
+            if i > 1: input_dim = hidden_dim     
+            lin_i_1 = nn.Linear(input_dim, hidden_dim)
+            lin_i_2 = nn.Linear(hidden_dim, hidden_dim)
+            nn.init.zeros_(lin_i_1.weight)
+            nn.init.zeros_(lin_i_2.weight)
+            nn.init.zeros_(lin_i_1.bias)
+            nn.init.zeros_(lin_i_2.bias)            
+            mlp = nn.Sequential(lin_i_1, nn.ReLU(), lin_i_2)
             # setattr(self, f"gnn_{i}", GATConv(in_channels=-1, out_channels=hidden_dim, edge_dim=1))
             setattr(self, f"gnn_{i}", GINConv(mlp, edge_dim=1))
         for i in range(1, num_heads+1):
-            setattr(self, f"out_mlp_{i}", nn.Linear(hidden_dim, 1))            
+            lin_out = nn.Linear(hidden_dim, 1)
+            nn.init.zeros_(lin_out.weight)
+            nn.init.zeros_(lin_out.bias)
+            setattr(self, f"out_mlp_{i}", lin_out)            
         self.num_layers = num_layers
         
     

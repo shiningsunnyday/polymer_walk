@@ -42,16 +42,27 @@ def walk_edge_weight(dag, graph, model, proc):
 
 def train(args, dags, graph, diffusion_args, norm_props, mol_feats):
     dags_copy = deepcopy(dags)
-    dags_copy_train, dags_copy_test, norm_props_train, norm_props_test = train_test_split(dags_copy, norm_props, test_size=0.4, random_state=42)
-    all_procs = []
+    if args.test_size:
+        dags_copy_train, dags_copy_test, norm_props_train, norm_props_test = train_test_split(dags_copy, norm_props, test_size=args.test_size, random_state=42)
+    else:
+        dags_copy_train, dags_copy_test, norm_props_train, norm_props_test = dags_copy, dags_copy, norm_props, norm_props
 
+    all_procs = []
     # data augmentation
     for i in range(len(dags_copy_train)):
         proc = graph.lookup_process(dags_copy_train[i].dag_id)
         procs = [proc]
-        if args.augment_dfs:
-            for j in range(1, proc.total):
+        if args.augment_dfs: # permutation of childs
+            proc_total = proc.total
+            if args.augment_order: # which node to start
+                proc_total = proc.total * (len(proc.main_chain))
+            for j in range(1, proc_total):
                 procs.append(DiffusionProcess(dags_copy_train[i], graph.index_lookup, dfs_seed=j, **graph.diffusion_args))    
+            if args.augment_dir:
+                for j in range(-1, -proc_total, -1):
+                    procs.append(DiffusionProcess(dags_copy_train[i], graph.index_lookup, dfs_seed=j, **graph.diffusion_args))
+        # for proc in procs:
+        #     print([a.id for a in proc.dfs_order])
         all_procs.append(procs)
 
 
@@ -91,6 +102,16 @@ def train(args, dags, graph, diffusion_args, norm_props, mol_feats):
     train_history = []
     best_loss = float("inf")
     print(args.logs_folder)
+    for i in range(len(dags_copy_train)):            
+        procs = all_procs[i]
+        for proc in procs:
+            W_adj = walk_edge_weight(dags_copy_train[i], graph, model, proc)
+            # GNN with edge weight
+            node_attr, edge_index, edge_attr = W_to_attr(args, W_adj, mol_feats)            
+            X = node_attr
+            prop = do_predict(predictor, X, edge_index, edge_attr)          
+
+            
     for epoch in range(args.num_epochs):        
         # compute edge control weighted adj matrix via model inference    
         
@@ -117,6 +138,7 @@ def train(args, dags, graph, diffusion_args, norm_props, mol_feats):
             if i % args.num_accumulation_steps == 0:                 
                 opt.step()
 
+        graph.reset()
         loss_history = []
         with torch.no_grad():
             for i in range(len(dags_copy_test)):                        
@@ -143,9 +165,12 @@ def train(args, dags, graph, diffusion_args, norm_props, mol_feats):
         ax = fig.add_subplot(1,1,1)
         ax.plot(np.arange(len(history))+1, history, label='test loss')
         ax.plot(np.arange(len(train_history))+1, train_history, label='train loss')
-        ax.text(0, min(history), "{}:.3f".format(min(history)))
-        ax.axhline(y=min(history), color='red')
+        ax.text(0, min(history), "{:.3f}".format(min(history)))
+        ax.text(0, min(train_history), "{:.3f}".format(min(train_history)))
+        ax.axhline(y=min(history), label='min test loss', c='red')
+        ax.axhline(y=min(train_history), label='min train loss', c='green')
         ax.set_title(f"Prediction loss")
+        ax.set_ylim(ymin=0, ymax=5)
         ax.set_ylabel(f"MSE Loss")
         ax.set_xlabel('Epoch')
         ax.legend()
@@ -241,6 +266,18 @@ def main(args):
         mol_feats = np.ones((len(G), args.input_dim), dtype=np.float32)
     elif args.mol_feat == 'W':
         mol_feats = torch.zeros((len(G), len(G)))
+    elif args.mol_feat == 'unimol':
+        unimol_feats = torch.load('data/group_reprs.pt')
+        for i, unimol_feat in enumerate(unimol_feats):
+            unimol_feats[i] = unimol_feat.sum(axis=0)
+        unimol_feats = torch.stack(unimol_feats)
+        feat_lookup = {}
+        for i in range(1,98):
+            feat_lookup[name_group(i)] = unimol_feats[i-1]
+        mol_feats = np.zeros((len(G), 512), dtype=np.float32)
+        for n in G.nodes():
+            ind = graph.index_lookup[n]
+            mol_feats[ind] = feat_lookup[n.split(':')[0]]            
     else:
         raise
 
@@ -398,6 +435,9 @@ if __name__ == "__main__":
     parser.add_argument('--dags_file')
     parser.add_argument('--walks_file')    
     parser.add_argument('--augment_dfs', action='store_true')
+    parser.add_argument('--augment_order', action='store_true')
+    parser.add_argument('--augment_dir', action='store_true')
+    parser.add_argument('--test_size', default=0., type=float)
 
     # training params
     parser.add_argument('--num_epochs', type=int)
@@ -406,7 +446,7 @@ if __name__ == "__main__":
     parser.add_argument('--opt', default='adam')
 
     # model params
-    parser.add_argument('--mol_feat', type=str, choices=['fp', 'one_hot', 'ones', 'W'])
+    parser.add_argument('--mol_feat', type=str, choices=['fp', 'one_hot', 'ones', 'W', 'unimol'])
     parser.add_argument('--hidden_dim', type=int, default=16)
     parser.add_argument('--num_layers', type=int, default=5)
 
