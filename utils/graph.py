@@ -1,4 +1,4 @@
-from utils.preprocess import *
+from preprocess import *
 from itertools import product, permutations
 
 mols = load_mols('/home/msun415/polymer_walk/data/all_groups')
