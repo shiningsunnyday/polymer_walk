@@ -459,17 +459,42 @@ def process_good_traj(traj, all_nodes):
     return name_traj, side_chain
 
 
+# after indicates side chain, e.g. A, B, A good but A, B, C, A bad
+def extract_sides(x):
+    # L3[->P28,->S20] to L3, P28, S20
+    occur = []
+    occur.append(x.split('[')[0])
+    for a in x.split('[')[1][:-1].split(','):
+        occur.append(a.split('->')[-1])
+    return occur
+
+
+def check_colon_order(all_nodes, traj, after):
+    ind = int(all_nodes[after].split(':')[-1])
+    bad_ind = False
+    grp = all_nodes[after].split(':')[0]
+    prev_indices = [all_nodes[extract(x)] for x in traj if grp in all_nodes[extract(x)]]
+    for prev_ind in prev_indices:
+        if ':' in prev_ind and int(prev_ind.split(':')[-1]) > ind:
+            bad_ind = True # P3:4 seen but we get 'P3:3'
+    for i in range(ind-1, -1, -1):
+        prev_ind_str = grp+(':'+str(i) if i else '')
+        if prev_ind_str not in prev_indices:
+            bad_ind = True # we get P3:3 but no P3:2 seen    
+    return bad_ind
+
+
 def sample_walk(n, G, graph, model, all_nodes):
     N = len(G)     
     context = torch.zeros((1, N), dtype=torch.float64)
     start = graph.index_lookup[n]
     state = torch.zeros((1, len(G)), dtype=torch.float64)
     state[0, graph.index_lookup[n]] = 1.
-    traj = [str(start)]
+    traj = [str(start)]    
     t = 0
     after = -1
     good = False    
-    while True:
+    while True:        
         update, context = model(state, context, t)
         if not (state>=0).all():
             breakpoint()
@@ -477,24 +502,16 @@ def sample_walk(n, G, graph, model, all_nodes):
         state = state/state.sum(axis=-1)
         t += 1
         state_numpy = state.detach().flatten().numpy()
-        after = np.random.choice(len(state_numpy), p=state_numpy)    
+        after = np.random.choice(len(state_numpy), p=state_numpy)
         if ':' in all_nodes[after]:
-            ind = int(all_nodes[after].split(':')[-1])
-            bad_ind = False
-            grp = all_nodes[after].split(':')[0]
-            prev_indices = [all_nodes[extract(x)] for x in traj if grp in all_nodes[extract(x)]]
-            for prev_ind in prev_indices:
-                if ':' in prev_ind and int(prev_ind.split(':')[-1]) > ind:
-                    bad_ind = True # P3:4 seen but we get 'P3:3'
-            for i in range(ind-1, -1, -1):
-                prev_ind_str = grp+(':'+str(i) if i else '')
-                if prev_ind_str not in prev_indices:
-                    bad_ind = True # we get P3:3 but no P3:2 seen
-            
+            bad_ind = check_colon_order(all_nodes, traj, after)
             if bad_ind: break
         
+        breakpoint()
         state = torch.zeros(len(G), dtype=torch.float64)
         state[after] = 1.
+
+        
         if extract(traj[-1]) == after:
             traj.append(str(after))
             break
@@ -502,22 +519,20 @@ def sample_walk(n, G, graph, model, all_nodes):
             traj.append(str(after))
             good = True
             break
-        # after indicates side chain, e.g. A, B, A good but A, B, C, A bad
-        def extract_sides(x):
-            occur = []
-            occur.append(x.split('[')[0])
-            for a in x.split('[')[1][:-1].split(','):
-                occur.append(a.split('->')[-1])
-            return occur
 
 
+        # convert traj=['P21[->L3,->S20]', 'P20'] into ['P21', 'P3', 'S20', 'P20']
         occur = []
         for x in traj:
-            if '[' in occur:
+            if '[' in x:
                 occur += extract_sides(x)
             else:
-                occur.append(x)                
+                occur.append(x)
+
         occur = np.array([str(after) in x for x in occur])
+        
+        # convert L3, S21, L3 into L3[->S21]
+        # convert L3[->P28,->S20], S21, L3 into L3[->P28,->S20,->S21]
         if occur.sum():
             if len(occur) == 1 or occur.sum() != 1: break
             if str(after) != traj[-2].split('[')[0]: break
