@@ -10,6 +10,7 @@ from typing import Optional, Union
 
 import rdkit.Chem as Chem
 from rdkit.Chem import Draw
+import torch
 
 
 class MolDrawer:
@@ -64,30 +65,24 @@ from typing import Callable
 
 
 class PrefixWriter:
-    def __init__(self, file: str = None):
-        self.prefix = self._default_prefix() if file is None else self._load(file)
+    def __init__(self, file: str = None, title=''):
+        self.prefix = self._default_prefix(title) if file is None else self._load(file)
 
-    def _default_prefix(self):
+    def _default_prefix(self, title):
         md = [
-            "# Synthetic Tree Visualisation",
-            "",
-            "Legend",
-            "- :green_square: Building Block",
-            "- :orange_square: Intermediate",
-            "- :blue_square: Final Molecule",
-            "- :red_square: Target Molecule",
+            f"# {title}",
             "",
         ]
         start = ["```mermaid"]
         theming = [
             "%%{init: {",
             "    'theme': 'base',",
-            "    'themeVariables': {",
-            "        'backgroud': '#ffffff',",
+            "    'themeVariables'a: {",
+            "        'background': '#FF0000',",
             "        'primaryColor': '#ffffff',",
             "        'clusterBkg': '#ffffff',",
-            "        'clusterBorder': '#000000',",
-            "        'edgeLabelBackground':'#dbe1e1',",
+            "        'clusterBorder': '#ffffff',",
+            "        'edgeLabelBackground':'#ffffff',",
             "        'fontSize': '20px'",
             "        }",
             "    }",
@@ -95,10 +90,7 @@ class PrefixWriter:
         ]
         diagram_id = ["graph BT"]
         style = [
-            "classDef buildingblock stroke:#00d26a,stroke-width:2px",
-            "classDef intermediate stroke:#ff6723,stroke-width:2px",
-            "classDef final stroke:#0074ba,stroke-width:2px",
-            "classDef target stroke:#f8312f,stroke-width:2px",
+            "classDef group stroke:#00d26a,stroke-width:2px",
         ]
         return md + start + theming + diagram_id + style
 
@@ -170,11 +162,11 @@ def write_edge(childs, parent):
     NODE_PREFIX = "n"
     out = []
     for c in childs:
-        out += [f"{NODE_PREFIX}{c} --> {NODE_PREFIX}{parent}"]
+        out += [f"{NODE_PREFIX}{c} <--> {NODE_PREFIX}{parent}"]
     return out
 
 
-def mermaid_write(mols, path, graph):
+def mermaid_write(mols, path, graph, props):
     drawer = MolDrawer(path)
     index_lookup = {name_group(i): mols[i-1] for i in range(1, 98)}
     smis = []
@@ -188,18 +180,20 @@ def mermaid_write(mols, path, graph):
     for node, smi in smis:
         name = f'"node.smiles"'
         name = f'<img src=""{drawer.outfolder.name}/{drawer.lookup[smi]}.svg"" height=75px/>'
-        classdef = "buildingblock"
+        classdef = "group"
         info = f"n{node}[{name}]:::{classdef}"
         text += [info]
 
-
-    for i, node in enumerate(graph.nodes):
-        childs = list(graph[node])
-        @subgraph(f'"{i:>2d} : connect"')
+    for edge in graph.edges(data=True):
+        # childs = list(graph[node])
+        name_a = graph.nodes(data=True)[edge[0]]['name']
+        name_b = graph.nodes(data=True)[edge[1]]['name']
+        w = edge[2]['w']
+        @subgraph(f'"{name_b}:{edge[1]}->{name_a}:{edge[0]}={w}"')
         def __printer():
             return write_edge(
-                childs,
-                node,
+                [edge[1]],
+                edge[0],
             )
 
         out = __printer()
@@ -208,17 +202,19 @@ def mermaid_write(mols, path, graph):
 
 
 
-def visualize_dag(args, dag):
-    graph = nx.Graph()
-    for edge in dag:
-        a, b, name_a, name_b, e = edge[:-1]
+def visualize_dag(args, dag_and_props, path):
+    graph = nx.DiGraph()
+    dag, *props = dag_and_props
+    for (i, edge) in enumerate(dag[:-2]):
+        if i % 2: continue        
+        a, b, name_a, name_b, e, _, w = edge
         graph.add_node(a, name=name_a)
         graph.add_node(b, name=name_b)
-        graph.add_edge(a, b, e=e)
+        graph.add_edge(a, b, e=e, w="{:.2f}".format(float(w)))
 
     mols = load_mols(args.motifs_folder)
-    text = mermaid_write(mols, args.out_path, graph)    
-    SynTreeWriter().write(text).to_file(os.path.join(args.out_path, 'test.md'))    
+    text = mermaid_write(mols, args.out_path, graph, props)    
+    SynTreeWriter(prefixer=PrefixWriter(title=f"H2={props[0]}, H2/N2={props[1]}")).write(text).to_file(path)
 
 
 if __name__ == "__main__":
@@ -232,6 +228,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     dags = json.load(open(args.dags_file, 'r'))
-    for dag in dags['old']:
-        visualize_dag(args, dag)
-        breakpoint()
+    for i, dag_and_props in enumerate(dags['old']):
+        visualize_dag(args, dag_and_props, os.path.join(args.out_path, f"old_{i}.md"))
+    for i, dag_and_props in enumerate(dags['novel']):
+        visualize_dag(args, dag_and_props, os.path.join(args.out_path, f"new_{i}.md"))
+        
