@@ -81,7 +81,7 @@ def annotate_extra(mols, path):
             m.GetBondWithIdx(i).SetBoolProp('r', False)
             m.GetBondWithIdx(i).SetBoolProp('picked', False)
         for l, red_grp in zip(labels, red_grps):
-            if l <= m.GetNumAtoms():
+            if l <= m.GetNumAtoms() and red_grp:
                 a = m.GetAtomWithIdx(l-1)
                 a.SetBoolProp('r', True)
                 a.SetProp('r_grp', red_grp)

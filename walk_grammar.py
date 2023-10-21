@@ -17,9 +17,8 @@ if __name__ == "__main__":
     parser.add_argument('--motifs_folder')
     args = parser.parse_args()
     if args.mol_path:
-        mols = load_mols(args.mol_path)
-    
-    red_grps = annotate_extra(mols, args.extra_label_path)
+        mols = load_mols(args.mol_path)    
+        red_grps = annotate_extra(mols, args.extra_label_path)
     # sanity checks
     G = nx.MultiDiGraph()
     # for i in range(41):
