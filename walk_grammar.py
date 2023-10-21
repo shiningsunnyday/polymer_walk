@@ -11,21 +11,25 @@ from utils import *
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument('--mol_path', help='folder to mols')
     parser.add_argument('--extra_label_path')
     parser.add_argument('--out_path')
     parser.add_argument('--motifs_folder')
     args = parser.parse_args()
+    if args.mol_path:
+        mols = load_mols(args.mol_path)
+    
     red_grps = annotate_extra(mols, args.extra_label_path)
     # sanity checks
     G = nx.MultiDiGraph()
     # for i in range(41):
     #     G.add_node(name_group(i+1))
-    pargs = [(i+1, j+1) for i in range(97) for j in range(97)]        
-    with Pool(32) as p:    
-        res = p.starmap(reds_isomorphic, pargs)  
-    # res = []
-    # for arg in pargs:
-    #     res.append(reds_isomorphic(*arg))  
+    pargs = [(i+1, j+1) for i in range(len(mols)) for j in range(len(mols))]        
+    # with Pool(32) as p:    
+    #     res = p.starmap(reds_isomorphic, pargs)  
+    res = []
+    for arg in pargs:
+        res.append(reds_isomorphic(*arg))  
 
     for (a, b), k in zip(pargs, res):
         if not k: continue

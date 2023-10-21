@@ -1,7 +1,9 @@
-from preprocess import *
+from .preprocess import *
 from itertools import product, permutations
 
-mols = load_mols('/home/msun415/polymer_walk/data/all_groups')
+# mols = load_mols('/home/msun415/polymer_walk/data/all_groups')
+mols = load_mols('/home/msun415/polymer_walk/data/datasets/pu_groups/all_groups')
+annotate_extra(mols, 'data/datasets/pu_groups/all_groups/all_extra.txt')
 
 class Node:
     def __init__(self, parent, children, val, id, side_chain=False):        
@@ -34,7 +36,7 @@ def enumerate_black_subsets(mol, k):
     for i, a in enumerate(mol.GetAtoms()):
         if not a.GetBoolProp('r'):
             b.append(i)
-    if k in [1,2,3]:
+    if k in [1,2,3,4,5]:
         return permutations(b, k)
     elif k == 6:
         res = []
@@ -250,3 +252,4 @@ def verify_walk(r_lookup, graph, walk):
         if bad: raise
      
     return root, edge_conn
+

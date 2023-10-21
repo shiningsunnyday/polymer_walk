@@ -25,13 +25,15 @@ if __name__ == "__main__":
     args = parser.parse_args()
     mols = load_mols(args.motifs_folder)
     red_grps = annotate_extra(mols, args.extra_label_path)    
-    graph = nx.read_edgelist(args.predefined_graph_file, create_using=nx.MultiDiGraph)
-    lines = open(args.data_file).readlines()    
-    r_lookup = r_member_lookup(mols)    
-    E_trained = json.load(open(args.trained_E_file, 'r'))
+    graph = nx.read_edgelist(args.predefined_graph_file, create_using=nx.MultiDiGraph)    
+    r_lookup = r_member_lookup(mols)
+    if args.trained_E_file:
+        E_trained = json.load(open(args.trained_E_file, 'r'))
     dags = {}
     used_edges = set()
     num_colors = 0
+
+    lines = open(args.data_file).readlines()
     for i, l in enumerate(lines):        
         walk = l.rstrip('\n').split(' ')[0]
         grps = extract_chain(walk)

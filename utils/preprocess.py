@@ -7,6 +7,7 @@ from data import *
 
 
 def name_group(m):
+    return f"G{m}" # not group contrib
     prefix = lambda x: "P" if x <= 41 else ("S" if x <= 73 else "L")
     return prefix(m)+f"{m if m<=41 else m-41 if m<=73 else m-73}"
 
