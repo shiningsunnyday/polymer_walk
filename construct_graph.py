@@ -32,20 +32,39 @@ if __name__ == "__main__":
     dags = {}
     used_edges = set()
     num_colors = 0
+    roots = []
+    conns = []
+    if os.path.isfile(args.data_file):
+        lines = open(args.data_file).readlines()
+        for i, l in enumerate(lines):        
+            walk = l.rstrip('\n').split(' ')[0]
+            grps = extract_chain(walk)
+            print(f"walk: {walk}, grps: {grps}")
+            try:             
+                root, conn = verify_walk(r_lookup, graph, grps)
+                breakpoint()
+                dags[i] = (grps, root, conn)
+            except Exception as e:
+                print("verify failed")
+                continue
+            roots.append(root)
+            conns.append(conn)
+    else: # other dataset
+        for f in os.listdir(args.data_file):
+            G = nx.read_edgelist(os.path.join(args.data_file, f), create_using=nx.MultiDiGraph)
+            if not G.nodes():
+                continue
+            if max(len(cyc) for cyc in nx.simple_cycles(G)) > 2: # length > 2 is problem
+                continue
+            root, conn = bfs_traverse(G)
+            dags[int(f.split('walk_')[-1].split('.')[0])] = (None, root, conn)
+            roots.append(root)
+            conns.append(conn)
 
-    lines = open(args.data_file).readlines()
-    for i, l in enumerate(lines):        
-        walk = l.rstrip('\n').split(' ')[0]
-        grps = extract_chain(walk)
-        print(f"walk: {walk}, grps: {grps}")
-        try:             
-            root, conn = verify_walk(r_lookup, graph, grps)
-            dags[i] = (grps, root, conn)
-        except Exception as e:
-            print("verify failed")
-            continue
-        do_color = True
-        if num_colors >= 1: do_color = False
+
+    for i, conn in enumerate(conns):
+        do_color = False
+        if num_colors >= 5: do_color = False
         else:
             for a, b, e in conn:
                 if (a.val,b.val,e) in used_edges:
@@ -64,7 +83,8 @@ if __name__ == "__main__":
                 else: 
                     graph[a.val][b.val][e]['color'] = graph[b.val][a.val][e]['color'] = 'black'
             except:
-                continue                
+                continue
+                          
 
     if args.out_path: 
         print(f"processed {len(dags)} dags")

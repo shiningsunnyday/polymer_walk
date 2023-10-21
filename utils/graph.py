@@ -1,9 +1,9 @@
 from .preprocess import *
 from itertools import product, permutations
 
-# mols = load_mols('/home/msun415/polymer_walk/data/all_groups')
-mols = load_mols('/home/msun415/polymer_walk/data/datasets/pu_groups/all_groups')
-annotate_extra(mols, 'data/datasets/pu_groups/all_groups/all_extra.txt')
+mols = load_mols('/home/msun415/polymer_walk/data/all_groups')
+# mols = load_mols('/home/msun415/polymer_walk/data/datasets/pu_groups/all_groups')
+# annotate_extra(mols, 'data/datasets/pu_groups/all_groups/all_extra.txt')
 
 class Node:
     def __init__(self, parent, children, val, id, side_chain=False):        
@@ -167,6 +167,36 @@ def search_walk(i, walk, graph, cur):
         if new_cur: return new_cur
         cur.pop()
     return []
+
+
+def bfs_traverse(G):
+    """
+    differences with verify_walk:
+    - 
+    """
+    start = list(G.nodes)[0]
+    prev_node = Node(None, [], start.split(':')[0], 0)
+    id = 1
+    bfs = [prev_node]
+    vis = {n: False for n in G.nodes()}
+    vis[start] = True
+    conn = []
+    root_node = prev_node
+    while bfs:
+        prev_node = bfs.pop(0)
+        for cur in G[prev_node.val]:            
+            if vis[cur]: continue
+            i = list(G[prev_node.val][cur])[0]
+            cur_node = Node((prev_node, i), [], cur.split(':')[0], id)
+            id += 1
+            prev_node.add_child((cur_node, i))
+            assert len(list(G[prev_node.val][cur])) == 1
+            conn.append((prev_node, cur_node, i))
+            conn.append((cur_node, prev_node, i))
+            vis[cur] = True
+            bfs.append(cur_node)
+
+    return root_node, conn   
 
 
 def dfs_traverse(walk):
