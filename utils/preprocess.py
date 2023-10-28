@@ -5,7 +5,6 @@ from collections import defaultdict
 import re
 from data import *
 
-
 def name_group(m):
     # return f"G{m}" # not group contrib
     prefix = lambda x: "P" if x <= 41 else ("S" if x <= 73 else "L")

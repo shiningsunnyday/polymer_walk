@@ -1,4 +1,5 @@
 from .preprocess import *
+import numpy as np
 from itertools import product, permutations
 
 mols = load_mols('/home/msun415/polymer_walk/data/all_groups')
@@ -204,7 +205,9 @@ def dfs_traverse(walk):
     root_node = None
     conn = []
     id = 0
-    for i in range(len(walk)):
+    assert walk[len(walk)-1] == walk[0] # come back to origin
+    assert '[' not in walk[len(walk)-1]
+    for i in range(len(walk)-1):
         if '[' in walk[i]:
             start = walk[i].find('[')
             assert ']' == walk[i][-1]

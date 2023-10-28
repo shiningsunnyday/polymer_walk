@@ -484,6 +484,16 @@ def check_colon_order(all_nodes, traj, after):
     return bad_ind
 
 
+
+def get_repr(state):
+    start_inds, end_inds = state.nonzero(as_tuple=True)
+    state_repr = []
+    
+    for a, b in zip(start_inds, end_inds):
+        state_repr.append([a.item(),b.item(),round(state[a, b].item(),2)])
+    return state_repr
+
+
 def sample_walk(n, G, graph, model, all_nodes):
     N = len(G)     
     context = torch.zeros((1, N), dtype=torch.float64)
@@ -493,8 +503,9 @@ def sample_walk(n, G, graph, model, all_nodes):
     traj = [str(start)]    
     t = 0
     after = -1
-    good = False    
-    while True:        
+    good = False   
+    while True:      
+        print(f"input state {get_repr(state)}, context {get_repr(context)}, t {t}")  
         update, context = model(state, context, t)
         if not (state>=0).all():
             breakpoint()
@@ -502,14 +513,18 @@ def sample_walk(n, G, graph, model, all_nodes):
         state = state/state.sum(axis=-1)
         t += 1
         state_numpy = state.detach().flatten().numpy()
-        after = np.random.choice(len(state_numpy), p=state_numpy)
+        after = np.random.choice(len(state_numpy), p=state_numpy)        
+        try:
+            print(f"post state {get_repr(state)}, context {get_repr(context)}, t {t}")
+            print(f"sampled {after} with prob {state_numpy[after]}")
+        except:
+            breakpoint()
         if ':' in all_nodes[after]:
             bad_ind = check_colon_order(all_nodes, traj, after)
             if bad_ind: break
         
-        breakpoint()
-        state = torch.zeros(len(G), dtype=torch.float64)
-        state[after] = 1.
+        state = torch.zeros((1, len(G)), dtype=torch.float64)
+        state[0, after] = 1.
 
         
         if extract(traj[-1]) == after:

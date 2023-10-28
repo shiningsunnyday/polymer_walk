@@ -2,8 +2,8 @@ import argparse
 import pickle
 import random
 import networkx as nx
-from utils.graph import *
-from diffusion import L_grammar, Predictor, DiffusionGraph, DiffusionProcess, sample_walk, process_good_traj
+from utils import *
+from diffusion import L_grammar, Predictor, DiffusionGraph, DiffusionProcess, sample_walk, process_good_traj, get_repr
 import json
 import torch
 import time
@@ -20,25 +20,28 @@ def walk_edge_weight(dag, graph, model, proc):
     context = torch.zeros((1, N), dtype=torch.float64)
     start_node_ind = graph.index_lookup[walk_order[0].val]
     prev_node_ind = start_node_ind
-    context[0, start_node_ind] = 1.            
     W_adj = torch.zeros((N, N), dtype=torch.float32)
     t = 0
     state = torch.zeros((1, N), dtype=torch.float64)
     state[0, start_node_ind] = 1.
     for j in range(1, len(walk_order)):
-        cur_node_ind = graph.index_lookup[walk_order[j].val]                
+        cur_node_ind = graph.index_lookup[walk_order[j%len(walk_order)].val]   
+        print(f"input state {get_repr(state)}, context {get_repr(context)}, t {t}")               
         update, context = model(state, context, t)
         state = torch.where(state+update>=0., state+update, 0.0)
         state = state/state.sum(axis=-1)
+        print(f"post state {get_repr(state)}, context {get_repr(context)}, t {t}")  
         # dist = Categorical(state)
         # log_prob = dist.log_prob(cur_node_ind)
         t += 1
-        W_adj[prev_node_ind, cur_node_ind] = state[cur_node_ind]
-        W_adj[cur_node_ind, prev_node_ind] = state[cur_node_ind]
-        context[0, cur_node_ind] = 1.
-        state = torch.zeros(N, dtype=torch.float64)
-        state[cur_node_ind] = 1.
-        prev_node_ind = cur_node_ind
+        W_adj[prev_node_ind, cur_node_ind] = state[0, cur_node_ind]
+        W_adj[cur_node_ind, prev_node_ind] = state[0, cur_node_ind]
+        if state[0, cur_node_ind] == 0.:
+            breakpoint()
+        print(f"recounted {cur_node_ind} with prob {state[0, cur_node_ind]}")        
+        state = torch.zeros((1, N), dtype=torch.float64)
+        state[0, cur_node_ind] = 1.
+        prev_node_ind = cur_node_ind  
     return W_adj 
 
 
@@ -297,6 +300,8 @@ def main(args):
         predictor = Predictor(input_dim=args.input_dim, hidden_dim=args.hidden_dim, num_layers=args.num_layers, num_heads=2)
         state = torch.load(os.path.join(args.predictor_file))
         predictor.load_state_dict(state)  
+        model.eval()
+        predictor.eval()
         props, norm_props, dags, mask = preprocess_data(dags, args, os.path.dirname(args.predictor_file))      
     else:    
         predictor_path = os.path.join(args.grammar_folder,f'predictor_{time.time()}')
@@ -319,51 +324,57 @@ def main(args):
         walk = l.rstrip('\n').split(' ')[0]
         walks.add(walk)
     new_novel = 1
-    while len(novel) < args.num_generate_samples and new_novel:
+    while len(novel) < args.num_generate_samples:
         print(f"add {new_novel} samples, now {len(novel)} novel samples")
         new_novel = 0
-        for _ in range(100):
-            for n in G.nodes():
-                if ':' in n: continue
-                traj, good = sample_walk(n, G, graph, model, all_nodes)                
-                if len(traj) > 1 and good:                    
-                    name_traj, side_chain = process_good_traj(traj, all_nodes)  
-                    assert len(traj) == len(name_traj)
-                    try:        
-                        root, edge_conn = verify_walk(r_lookup, predefined_graph, name_traj)
-                        DiffusionGraph.value_count(root, {}) # modifies edge_conn with :'s too
-                        name_traj = '->'.join(name_traj)
-                        trajs.append(name_traj)
-                        # print(name_traj, "success")
-                        if name_traj not in walks:
-                            print(name_traj, "novel")
-                            walks.add(name_traj)                        
-                            proc = DiffusionProcess(root, graph.index_lookup, **diffusion_args)
-                            W_adj = walk_edge_weight(root, graph, model, proc)
-                            node_attr, edge_index, edge_attr = W_to_attr(args, W_adj, mol_feats)
-                            X = node_attr
-                            prop = do_predict(predictor, X, edge_index, edge_attr)
-                            print("predicted prop", prop)
-                            novel.append((name_traj, root, edge_conn, W_adj, prop.detach().numpy()))
-                            new_novel += 1
-                            # p (lambda W_adj,edge_conn,graph:[[a.id,a.val,b.id,b.val,e,W_adj[graph.index_lookup[a.val]][graph.index_lookup[b.val]].item(),W_adj[graph.index_lookup[b.val]][graph.index_lookup[a.val]].item()] for (a,b,e) in edge_conn])(W_adj,edge_conn,graph)                            
-                    except:
-                        pass
+        for n in G.nodes():
+            if ':' in n: continue
+            traj, good = sample_walk(n, G, graph, model, all_nodes)                
+            if len(traj) > 1 and good:                    
+                name_traj, side_chain = process_good_traj(traj, all_nodes)  
+                assert len(traj) == len(name_traj)
+                try:        
+                    root, edge_conn = verify_walk(r_lookup, predefined_graph, name_traj)
+                    DiffusionGraph.value_count(root, {}) # modifies edge_conn with :'s too
+                    name_traj = '->'.join(name_traj)
+                    trajs.append(name_traj)
+                    # print(name_traj, "success")
+                    if name_traj not in walks:
+                        print(name_traj, "novel")
+                        walks.add(name_traj)                        
+                        proc = DiffusionProcess(root, graph.index_lookup, **diffusion_args)
+                        W_adj = walk_edge_weight(root, graph, model, proc)
+                        node_attr, edge_index, edge_attr = W_to_attr(args, W_adj, mol_feats)
+                        X = node_attr
+                        prop = do_predict(predictor, X, edge_index, edge_attr)
+                        print("predicted prop", prop)
+                        probs = [W_adj[int(traj[i])][int(traj[(i+1)%len(traj)])] for i in range(len(traj))]
+                        novel.append((name_traj, root, edge_conn, W_adj, prop.detach().numpy()))
+                        new_novel += 1
+                        # p (lambda W_adj,edge_conn,graph:[[a.id,a.val,b.id,b.val,e,W_adj[graph.index_lookup[a.val]][graph.index_lookup[b.val]].item(),W_adj[graph.index_lookup[b.val]][graph.index_lookup[a.val]].item()] for (a,b,e) in edge_conn])(W_adj,edge_conn,graph)                            
+                except:
+                    pass
             
-    orig_preds = []    
+    orig_preds = []   
     graph.reset()
     loss_history = []
     all_walks = {}
     all_walks['old'] = []
     for i, dag in enumerate(dags):
-        W_adj = walk_edge_weight(dag, graph, model, graph.lookup_process(dag.dag_id))
+        proc = graph.lookup_process(dag.dag_id)
+        W_adj = walk_edge_weight(dag, graph, model, proc)
         node_attr, edge_index, edge_attr = W_to_attr(args, W_adj, mol_feats)
         X = node_attr
         prop = do_predict(predictor, X, edge_index, edge_attr)           
         loss_history.append(nn.MSELoss()(prop, norm_props[i]).item())
         prop_npy = prop.detach().numpy()
         orig_preds.append(prop_npy)
-        all_walks['old'].append((data_copy[dag.dag_id][-1], W_adj, props[i]))
+        for i in range(len(proc.dfs_order)-1):
+            a = proc.dfs_order[i]
+            b = proc.dfs_order[i+1]
+            if not W_adj[graph.index_lookup[a.val]][graph.index_lookup[b.val]]:
+                breakpoint()
+        all_walks['old'].append((data[dag.dag_id][-1], W_adj, props[i]))
 
     print(np.mean(loss_history))
 
@@ -432,7 +443,12 @@ def main(args):
             pruned = []
             for j, edge in enumerate(conn[:-2]):
                 a, b, e = edge
-                w = W[graph.index_lookup[a.val]][graph.index_lookup[b.val]].item()
+                try:
+                    w = W[graph.index_lookup[a.val]][graph.index_lookup[b.val]].item()
+                except:
+                    breakpoint()
+                if w == 0.:
+                    breakpoint()
                 pruned.append((a, b, e, w))
 
             all_walks[key][i] = (pruned, prop)
@@ -474,7 +490,7 @@ if __name__ == "__main__":
     parser.add_argument('--opt', default='adam')
 
     # model params
-    parser.add_argument('--mol_feat', type=str, choices=['fp', 'one_hot', 'ones', 'W', 'unimol'])
+    parser.add_argument('--mol_feat', type=str, default='W', choices=['fp', 'one_hot', 'ones', 'W', 'unimol'])
     parser.add_argument('--hidden_dim', type=int, default=16)
     parser.add_argument('--num_layers', type=int, default=5)
 

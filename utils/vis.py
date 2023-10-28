@@ -2,7 +2,7 @@ import argparse
 import pickle
 import json
 import networkx as nx
-from .graph import *
+import os
 
 import uuid
 from pathlib import Path
