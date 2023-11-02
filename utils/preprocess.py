@@ -3,6 +3,7 @@ from rdkit import Chem
 from rdkit.Chem import Draw
 from collections import defaultdict
 import re
+import networkx as nx
 from data import *
 
 def name_group(m):
@@ -17,14 +18,38 @@ def load_mols(folder):
     files = os.listdir(folder)
     files = list(filter(lambda x: x.endswith('.mol'), files))
     files = sorted(files, key=lambda x:int(x.rstrip('.mol')))
-
     for f in files:
+        # if f == '15.mol':
+        #     mol = Chem.MolFromSmiles('CC1=CC(C)=CC=C1C')
+        #     breakpoint()
+        #     for i, a in enumerate(mol.GetAtoms()): 
+        #         a.SetProp("molAtomMapNumber", str(i+1))            
+        #     Chem.rdmolfiles.MolToMolFile(mol, 'data/all_groups/with_label/15.mol')
         if f.endswith('.mol'):
             mol = Chem.rdmolfiles.MolFromMolFile(os.path.join(folder, f))
+            if not mol:
+                mol = Chem.rdmolfiles.MolFromMolFile(os.path.join(folder, f), sanitize=False)
+            assert mol
             mols.append(mol)
             for i, a in enumerate(mol.GetAtoms()): 
                 a.SetProp("molAtomMapNumber", str(i+1))
     return mols
+
+
+def load_walks(args):
+    if os.path.isdir(args.data_file):
+        for f in os.listdir(args.data_file):
+            if f.endswith('.edgelist'):
+                graph = nx.read_edgelist(os.path.join(args.data_file, f))
+                pass
+    else:
+        lines = open(args.data_file).readlines()
+        walks = set()
+        for i, l in enumerate(lines):        
+            walk = l.rstrip('\n').split(' ')[0]
+            walks.add(walk)
+        print(walks)    
+    return walks
 
 
 def r_member_lookup(mols):
@@ -33,7 +58,8 @@ def r_member_lookup(mols):
         for j, a in enumerate(mol.GetAtoms()):
             r = a.GetProp('r_grp')
             if not r: continue
-            dic[name_group(i+1)][r].append(j)
+            for r_ in r.split('-'):
+                dic[name_group(i+1)][r_].append(j)
             
     return dic
 
@@ -54,8 +80,8 @@ def annotate_extra(mols, path):
                 break
             if line == '\n':
                 if labels:
-                    all_labels.append(labels)
-                    labels = []
+                    all_labels.append(labels) # labels can be [] if mols has no atoms
+                labels = []
             else:
                 red_grp = ''
                 label = line.split(':')[0]
@@ -68,7 +94,8 @@ def annotate_extra(mols, path):
 
     print(len(mols), len(all_labels))
     if volumes: assert len(volumes) == len(mols)
-    for i in range(len(mols)):
+
+    for i in range(len(all_labels)):
         m = mols[i]
         if volumes: m.GetConformer().SetProp('V', volumes[i])
         labels = [l[0] for l in all_labels[i]]

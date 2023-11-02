@@ -2,9 +2,17 @@ from .preprocess import *
 import numpy as np
 from itertools import product, permutations
 
-mols = load_mols('/home/msun415/polymer_walk/data/all_groups')
-# mols = load_mols('/home/msun415/polymer_walk/data/datasets/pu_groups/all_groups')
+mols = load_mols('data/all_groups')
+annotate_extra(mols, 'data/all_groups/all_extra.txt')
+
+# mols = load_mols('data/datasets/pu_groups/all_groups')
 # annotate_extra(mols, 'data/datasets/pu_groups/all_groups/all_extra.txt')
+
+# mols = load_mols('data/datasets/lipophilicity/all_groups')
+# annotate_extra(mols, 'data/datasets/lipophilicity/all_groups/all_extra.txt')
+
+# mols = load_mols('data/datasets/datasetA_permeability/all_groups')
+# annotate_extra(mols, 'data/datasets/datasetA_permeability/all_groups/all_extra.txt')
 
 class Node:
     def __init__(self, parent, children, val, id, side_chain=False):        
@@ -49,7 +57,7 @@ def enumerate_black_subsets(mol, k):
                 res.append(list(reversed(res[-1])))
         return res
     else:
-        breakpoint()
+        return permutations(b, k)
 
 
 def inc(x):
@@ -73,21 +81,67 @@ def connected(mol, inds):
     return sum(vis) == len(inds)
 
 
+def mol_to_graph(mol, inds, r=False):
+    graph = nx.Graph()
+    for i, ind in enumerate(inds):
+        a = mol.GetAtomWithIdx(ind)
+        kwargs = {}
+        if r: kwargs['r'] = a.GetBoolProp('r')
+        graph.add_node(str(i), symbol=a.GetSymbol(), **kwargs)
+    for i, u in enumerate(inds):
+        for j, v in enumerate(inds):
+            bond = mol.GetBondBetweenAtoms(u, v)
+            if bond:
+                graph.add_edge(str(i), str(j), bond_type=bond.GetBondType())
+    return graph
 
-def check_isomorphic(mol1, mol2, v1, v2):
-    debug = False
+
+def check_order(orig_mol, mol, cls, r=False):
+    """
+    Check whether subgraph induced by cls ~ mol
+    r further checks if red atoms are the same
+    """    
+    
+    graph_1 = mol_to_graph(orig_mol, cls, r=r)
+    graph_2 = mol_to_graph(mol, list(range(mol.GetNumAtoms())), r=r)
+
+    if len(graph_1) != len(graph_2):
+        return False
+    if len(graph_1) == 1:
+        breakpoint()
+        res = list(dict(graph_1.nodes(data=True)).values())[0] == list(dict(graph_2.nodes(data=True)).values())[0]
+    else:
+        res = nx.is_isomorphic(graph_1, graph_2, node_match, edge_match)
+    
+    return res
+
+
+def check_isomorphic(mol1, mol2, v1, v2):        
+    # debug = False
     # if v1 == [14, 15, 4, 3, 2, 1, 0, 5] and v2 == [6, 9, 0, 1, 2, 3, 4, 5]:
     #     breakpoint()
     #     debug = True
-    if len(v1) != len(v2): return False
+    if len(v1) != len(v2): 
+        return False
+   
+    for i in range(len(v1)):
+        a1 = mol1.GetAtomWithIdx(v1[i])
+        a2 = mol2.GetAtomWithIdx(v2[i])
+        if a1.GetBoolProp('r') or a2.GetBoolProp('r'):
+            continue
+        if a1.GetSymbol() != a2.GetSymbol():
+            return False
     for i in range(len(v1)):
         for j in range(i+1, len(v1)):
-            try:
-                b1 = mol1.GetBondBetweenAtoms(v1[i], v1[j])
-                b2 = mol2.GetBondBetweenAtoms(v2[i], v2[j])
-            except:
-                breakpoint()
+            b1 = mol1.GetBondBetweenAtoms(v1[i], v1[j])
+            b2 = mol2.GetBondBetweenAtoms(v2[i], v2[j])                   
             if (b1 == None) != (b2 == None): 
+                return False
+            if b1 != None and b1.GetBondType() != b2.GetBondType():
+                if b1.GetBeginAtom().GetBoolProp('r'): continue
+                if b2.GetBeginAtom().GetBoolProp('r'): continue
+                if b1.GetEndAtom().GetBoolProp('r'): continue
+                if b2.GetEndAtom().GetBoolProp('r'): continue
                 return False
     return True
 
@@ -104,15 +158,30 @@ def find_isomorphic(mol1, mol2, r_grp_1):
 
 def red_isomorphic(m1, m2, r_grp_1, r_grp_2):
     b2s = find_isomorphic(mols[m1-1], mols[m2-1], r_grp_1)
-    if not b2s: return 0
+    # if not b2s:
+    #     if r_grp_1: 
+    #         return []
+    #     else:
+    #         b2s = [[]]
     b1s = find_isomorphic(mols[m2-1], mols[m1-1], r_grp_2)
-    if not b1s: return 0
+    # if not b1s:
+    #     if r_grp_2: 
+    #         return []
+    #     else:
+    #         b1s = [[]]
     res = []
+    conn_b1s = []
+    for b1 in b1s:
+        if connected(mols[m1-1], r_grp_1+b1):
+            conn_b1s.append(b1)
+    conn_b2s = []
     for b2 in b2s:
-        for b1 in b1s:
-            if check_isomorphic(mols[m1-1], mols[m2-1], r_grp_1+b1, b2+r_grp_2):
-                if connected(mols[m1-1], r_grp_1+b1) and connected(mols[m2-1], r_grp_2+b2):
-                    return [r_grp_1, b1, b2, r_grp_2] # r_grp_1 <-> b2
+        if connected(mols[m2-1], b2+r_grp_2):
+            conn_b2s.append(b2)
+    for b2 in conn_b2s:     
+        for b1 in conn_b1s:
+            if (b1+b2) and check_isomorphic(mols[m1-1], mols[m2-1], r_grp_1+b1, b2+r_grp_2):
+                return [r_grp_1, b1, b2, r_grp_2] # r_grp_1 <-> b2
     return res
 
 
@@ -121,6 +190,10 @@ def reds_isomorphic(m1, m2):
     r_grp_m1 = list_red_members(mols[m1-1])
     r_grp_m2 = list_red_members(mols[m2-1])
     parallel = []
+    if not r_grp_m1:
+        r_grp_m1 = [[]]
+    if not r_grp_m2:
+        r_grp_m2 = [[]]
     for r_grp_1, r_grp_2 in product(r_grp_m1, r_grp_m2):        
         res = red_isomorphic(m1, m2, r_grp_1, r_grp_2)
         if res:
@@ -205,8 +278,8 @@ def dfs_traverse(walk):
     root_node = None
     conn = []
     id = 0
-    assert walk[len(walk)-1] == walk[0] # come back to origin
-    assert '[' not in walk[len(walk)-1]
+    if walk[len(walk)-1] != walk[0]: # come back to origin
+        walk.append(walk[0])
     for i in range(len(walk)-1):
         if '[' in walk[i]:
             start = walk[i].find('[')
@@ -220,12 +293,14 @@ def dfs_traverse(walk):
                 conn.append((prev_node, cur))
                 conn.append((cur, prev_node))
             for g in grps[1:]:
-                g_child = Node(cur, [], g, id, True)
-                id += 1
-                cur.add_child(g_child)
-                conn.append((cur, g_child))
-                conn.append((g_child, cur))
-
+                prev_g = cur
+                for next_g in g.split('->'):
+                    g_child = Node(prev_g, [], next_g, id, True)
+                    id += 1
+                    prev_g.add_child(g_child)
+                    conn.append((prev_g, g_child))
+                    conn.append((g_child, prev_g))
+                    prev_g = g_child                    
             if i:
                 prev_node.add_child(cur)           
             prev_node = cur
@@ -251,11 +326,10 @@ def verify_walk(r_lookup, graph, walk):
     # check all edges exist
     def find_edge(red_key, dir, r_grps):
         for i, r_grp in r_grps.items():
-            if dir == 'k1' and r_grp == red_key[dir][:len(r_grp)]:
+            if dir == 'k1' and r_grp == red_key['r_grp_1']:
                 return r_grp
-            if dir == 'k2' and r_grp == red_key[dir][-len(r_grp):]:
+            if dir == 'k2' and r_grp == red_key['r_grp_2']:
                 return r_grp
-        breakpoint()
     
     try:
         root, conn = dfs_traverse(walk)
@@ -264,14 +338,27 @@ def verify_walk(r_lookup, graph, walk):
     used_reds = defaultdict(set)
     edge_conn = []
     bad = False
+    
+    poss = defaultdict(set)
     for a, b in conn:
-        for i in range(len(graph[a.val][b.val])):            
+        if b.val not in graph[a.val]:
+            raise KeyError(f"{a.val} {b.val} not connected")        
+        num_poss = len(graph[a.val][b.val])
+        for i in range(num_poss):
             e = graph[a.val][b.val][i]
-            red_j1 = find_edge(e, 'k1', r_lookup[a.val])
+            red_j1 = sorted(e['r_grp_1'])
+            poss[a.id].add(tuple(red_j1))
+
+    poss = {k: list(v) for (k,v) in poss.items()}
+    used_reds = defaultdict(set)
+    bad = True
+    for a, b in conn:
+        for red_j1 in poss[a.id]:
+            assert red_j1 in set(tuple(x) for x in r_lookup[a.val].values())
             if set(red_j1) & used_reds[a]: 
-                if i == len(graph[a.val][b.val])-1: bad = True
                 continue
             else: 
+                bad = False
                 used_reds[a] |= set(red_j1)
                 # print(f"{a.val}->{b.val}")
                 # print(f"used {used_reds[a]}")
@@ -282,7 +369,8 @@ def verify_walk(r_lookup, graph, walk):
                 elif b == a.parent:
                     a.parent = (b, i)
                 break
-        if bad: raise
+        if bad:
+            raise
      
     return root, edge_conn
 

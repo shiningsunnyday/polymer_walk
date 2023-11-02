@@ -39,14 +39,18 @@ if __name__ == "__main__":
         for i, l in enumerate(lines):        
             walk = l.rstrip('\n').split(' ')[0]
             grps = extract_chain(walk)
-            print(f"walk: {walk}, grps: {grps}")
-            try:             
+            # print(f"walk: {walk}, grps: {grps}")
+            try:
                 root, conn = verify_walk(r_lookup, graph, grps)
-                breakpoint()
-                dags[i] = (grps, root, conn)
-            except Exception as e:
-                print("verify failed")
+            except KeyError as e:
+                if type(e) == KeyError:
+                    print(e)
+                    continue
+                else:
+                    breakpoint()
                 continue
+            dags[i] = (grps, root, conn)
+           
             roots.append(root)
             conns.append(conn)
     else: # other dataset
@@ -55,6 +59,7 @@ if __name__ == "__main__":
             if not G.nodes():
                 continue
             if max(len(cyc) for cyc in nx.simple_cycles(G)) > 2: # length > 2 is problem
+                print(f"{f} has cycle")
                 continue
             root, conn = bfs_traverse(G)
             dags[int(f.split('walk_')[-1].split('.')[0])] = (None, root, conn)
@@ -73,26 +78,26 @@ if __name__ == "__main__":
         print("num_colors", num_colors)
         for a, b, e in conn:            
             try:
-                graph[a.val][b.val][e]['weight'] = graph[a.val][b.val][e].get('weight', 0)+2
-                graph[b.val][a.val][e]['weight'] = graph[b.val][a.val][e].get('weight', 0)+2
+                graph[a.val][b.val][e]['weight'] = graph[a.val][b.val][e].get('weight', 0)+.5
+                graph[b.val][a.val][e]['weight'] = graph[b.val][a.val][e].get('weight', 0)+.5
                 if do_color: 
                     graph[a.val][b.val][e]['color'] = graph[b.val][a.val][e]['color'] = base_colors[num_colors%len(base_colors)]
                     used_edges.add((a.val,b.val,e))
                     graph[a.val][b.val][e]['weight'] = E_trained[a.val][b.val]*100 if args.trained_E_file else 40
                     graph[b.val][a.val][e]['weight'] = E_trained[b.val][a.val]*100 if args.trained_E_file else 40
                 else: 
-                    graph[a.val][b.val][e]['color'] = graph[b.val][a.val][e]['color'] = 'black'
+                    graph[a.val][b.val][e]['color'] = graph[b.val][a.val][e]['color'] = 'red'
             except:
                 continue
                           
 
     if args.out_path: 
-        print(f"processed {len(dags)} dags")
+        print(f"processed {len(dags)}/{len(lines)} dags")
         pickle.dump(dags, open(args.out_path, 'wb+'))
         breakpoint()
 
     # G = nx.MultiDiGraph(e)
-    fig = plt.Figure(figsize=(100, 100))
+    fig = plt.Figure(figsize=(50, 50))
     ax = fig.add_subplot()
     pos = nx.circular_layout(graph)
     nx.draw(graph, pos, with_labels=True, ax=ax)

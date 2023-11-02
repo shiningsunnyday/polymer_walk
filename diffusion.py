@@ -587,12 +587,7 @@ def sample_walks(G, graph, walks, model, all_nodes, r_lookup, predefined_graph):
 
 
 def main(args):
-    lines = open(args.data_file).readlines()   
-    walks = set()
-    for i, l in enumerate(lines):        
-        walk = l.rstrip('\n').split(' ')[0]
-        walks.add(walk)
-    print(walks)
+    walks = load_walks(args)
     diffusion_args = {k[len('diffusion_'):]: v for (k, v) in args.__dict__.items() if 'diffusion' in k}
 
     graph = nx.read_edgelist(args.predefined_graph_file, create_using=nx.MultiDiGraph)
