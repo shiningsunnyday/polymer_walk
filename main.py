@@ -3,7 +3,7 @@ import pickle
 import random
 import networkx as nx
 from utils import *
-from diffusion import L_grammar, Predictor, DiffusionGraph, DiffusionProcess, sample_walk, process_good_traj, get_repr, state_to_probs
+from diffusion import L_grammar, Predictor, DiffusionGraph, DiffusionProcess, sample_walk, process_good_traj, get_repr, state_to_probs, append_traj
 import json
 import torch
 import time
@@ -234,6 +234,7 @@ def W_to_attr(args, W_adj, mol_feats):
     return node_attr, edge_index, edge_attr
 
 
+
 def main(args):
     # Warmup epochs
         # Set E (edge weights), alpha as parameters
@@ -260,9 +261,15 @@ def main(args):
     diffusion_args = {k[len('diffusion_'):]: v for (k, v) in config_json.items() if 'diffusion' in k}
 
     graph = nx.read_edgelist(args.predefined_graph_file, create_using=nx.MultiDiGraph)
-    graph = DiffusionGraph(dags, graph, **diffusion_args)     
+    graph = DiffusionGraph(dags, graph, **diffusion_args)
+    predefined_graph = nx.read_edgelist(args.predefined_graph_file, create_using=nx.MultiDiGraph)    
     G = graph.graph
-    N = len(G)    
+    N = len(G)   
+    all_nodes = list(G.nodes())   
+
+
+    run_tests(predefined_graph, all_nodes)
+ 
     mols = load_mols(args.motifs_folder)
     red_grps = annotate_extra(mols, args.extra_label_path)    
     r_lookup = r_member_lookup(mols) 
@@ -323,9 +330,7 @@ def main(args):
 
         props, norm_props, dags, mask = preprocess_data(dags, args, args.logs_folder)            
         model, predictor = train(args, dags, graph, diffusion_args, norm_props, mol_feats)
-
-    all_nodes = list(G.nodes())  
-    predefined_graph = nx.read_edgelist(args.predefined_graph_file, create_using=nx.MultiDiGraph)    
+       
     graph.reset()
     trajs = []
     novel = []   
@@ -342,7 +347,7 @@ def main(args):
             if ':' in n: continue
             traj, good = sample_walk(n, G, graph, model, all_nodes)                
             if len(traj) > 1 and good:                    
-                name_traj, side_chain = process_good_traj(traj, all_nodes)  
+                name_traj = process_good_traj(traj, all_nodes)       
                 assert len(traj) == len(name_traj)
                 try:        
                     root, edge_conn = verify_walk(r_lookup, predefined_graph, name_traj)
@@ -412,8 +417,6 @@ def main(args):
             out_2.append(unnorm_prop[1])
             novel[i][-1][0] = unnorm_prop[0]
             novel[i][-1][1] = unnorm_prop[1]
-            print(f"{x[0]},{','.join(list(map(str,unnorm_prop)))},{unnorm_prop[1]}")
-            f.write(f"{x[0]},{','.join(list(map(str,unnorm_prop)))},{unnorm_prop[1]}\n")
     
     orig_preds = [[orig_pred[i]*std[i]+mean[i] for i in range(2)] for orig_pred in orig_preds]
     out, out_2, orig_preds = np.array(out), np.array(out_2), np.array(orig_preds)
@@ -441,12 +444,17 @@ def main(args):
 
     # for k, v in list(data_copy.items()):
     #     if k in mask:
-    #         all_walks['old'].append(v)
-    novel = sorted(novel, key=lambda x:len(x[2]))
+    #         all_walks['old'].append(v)    
     
     with open(os.path.join(args.logs_folder, 'novel.txt'), 'w+') as f:
         for n in novel:
             f.write(n[0]+'\n')
+
+    with open(os.path.join(args.logs_folder, 'novel_props.txt'), 'w+') as f:
+        f.write("walk,H_2,N_2,H_2/N_2,is_pareto\n")
+        for i, x in enumerate(novel):
+            print(f"{x[0]},{','.join(list(map(str,novel[i][-1][:2])))},{i in pareto_1}")
+            f.write(f"{x[0]},{','.join(list(map(str,novel[i][-1][:2])))},{i in pareto_1}\n")
 
 
     all_walks['novel'] = [(x[2], x[-2], x[-1]) for x in novel]  
@@ -473,8 +481,28 @@ def main(args):
     print("novel", novel)
     json.dump(all_walks, open(os.path.join(args.logs_folder, 'all_dags.json'), 'w+'))
 
-                
+
+def run_tests(graph, all_nodes)                :
+    # test append_traj
+    traj, after = ['90', '50', '8'], 50
+    assert append_traj(traj,after) == ['90', '50[->8]']
+    traj, after = ['90', '50[->8]', '4', '25'], 4
+    assert append_traj(traj,after) == ['90', '50[->8]', '4[->25]']
+    traj, after = ['90', '50[->8]', '4[->25]'], 50
+    assert append_traj(traj,after) == ['90', '50[->8,->4->25]']
+
+    # test verify_walk    
+    r_lookup = r_member_lookup(mols)     
+    verify_walk(r_lookup, graph, ['L3','S32','S20[->S1,->S1]','S32'])
+    verify_walk(r_lookup, graph, ['L3','S32','S20[->P14->P39,->S18]','S32'])
     
+    # test process_good_traj
+    name_traj = process_good_traj(['61','90','50[->39,->39]','90'], all_nodes)    
+    assert name_traj == ['L3','S32','S20[->S1,->S1]','S32']
+    name_traj = process_good_traj(['61','90','50[->12->37,->48]','90'], all_nodes)
+    assert name_traj == ['L3','S32','S20[->P14->P39,->S18]','S32']
+
+
 
 
 if __name__ == "__main__":
@@ -515,5 +543,5 @@ if __name__ == "__main__":
     parser.add_argument('--num_generate_samples', type=int, default=100)
 
     args = parser.parse_args()    
-     
+    
     main(args)

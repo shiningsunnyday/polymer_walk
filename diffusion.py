@@ -480,31 +480,29 @@ def side_chain_grammar(index_lookup, log_folder):
 
 
 def process_good_traj(traj, all_nodes):
-    drop_colon = lambda x: x.split(':')[0]
+    """
+    take a numbered traj, like ['61', '90', '50[->12->37,->48]', '90']
+    turn it into ['L3','S32','S20[->P14->P39,->S18]','S32']
+    simple string parsing algo is enough
+    """
     name_traj = []
-    side_chain = False                
     for x in traj:
-        if '[' in x:
-            side_chain = True
-            side = x[x.find('[')+1:x.rfind(']')]
-            if '[' in side:
-                breakpoint()
-            new_side = []
-            for y in side.split(','):
-                try:
-                    name = all_nodes[int(y[len('->'):])]
-                except:
-                    breakpoint()
-                new_side.append('->' + name.split(':')[0])
-            side = ','.join(new_side)                        
-            c = all_nodes[int(drop_colon(x.split('[')[0]))]+'['+side+']'
-        else:
-            c = all_nodes[int(x)]
-            if ':' in c:
-                c = drop_colon(c)
-        
-        name_traj.append(c)  
-    return name_traj, side_chain
+        i = 0
+        y = ""
+        while i < len(x):
+            if x[i].isdigit():
+                j = i+1
+                while j < len(x):
+                    if not x[j].isdigit():
+                        break
+                    j += 1
+                y += all_nodes[int(x[i:j])]
+                i = j
+            else:
+                y += x[i]
+                i += 1
+        name_traj.append(y)
+    return name_traj
 
 
 # after indicates side chain, e.g. A, B, A good but A, B, C, A bad
@@ -540,6 +538,50 @@ def get_repr(state):
     for a, b in zip(start_inds, end_inds):
         state_repr.append([a.item(),b.item(),round(state[a, b].item(),2)])
     return state_repr
+
+
+
+def append_traj(traj, after):
+    # convert traj=['P21[->L3,->S20]', 'P20'] into ['P21', 'P3', 'S20', 'P20']
+    occur = []
+    for x in traj:
+        if '[' in x:
+            occur += extract_sides(x)
+        else:
+            occur.append(x)
+
+    occur = np.array([str(after) in x for x in occur])
+    
+    # convert L3, S21, L3 into L3[->S21]
+    # convert L3[->P28,->S20], S21, L3 into L3[->P28,->S20,->S21]
+    if occur.sum():
+        if len(occur) == 1 or occur.sum() != 1: return []
+        if str(after) != traj[-2].split('[')[0]: return []
+        print("before", traj, after)
+        if '[' in traj[-2]:
+            if '[' in traj[-1]:
+                # example: ['90', '50[->8]', '4[->25]'] 50
+                # linearize traj[-1] first
+                side = ''.join([f"->{traj[-1][:traj[-1].find('[')]}"] + traj[-1][traj[-1].find('[')+1:-1].split(','))
+                # ->4->25
+                assert ']' == traj[-2][-1]
+                traj[-2]= f"{traj[-2][:-1]},{side}]"
+            else:
+                traj[-2] = traj[-2][:-1]+',->'+str(traj[-1])+']'
+        else:
+            if '[' in traj[-1]:
+                # example: ['61', '90', '50', '12[->37]'], after=50   
+                # => 50[->12,->37]          
+                side = ','.join([f"->{traj[-1][:traj[-1].find('[')]}"] + traj[-1][traj[-1].find('[')+1:-1].split(','))
+                traj[-2]= f"{traj[-2]}[{side}]"                    
+            else:
+                traj[-2] = f"{traj[-2]}[->{traj[-1]}]"            
+        traj.pop(-1)
+        print("after", traj, after)
+    else:
+        traj.append(str(after))    
+    return traj
+
 
 
 def sample_walk(n, G, graph, model, all_nodes):
@@ -581,39 +623,11 @@ def sample_walk(n, G, graph, model, all_nodes):
             traj.append(str(after))
             good = True
             break
-
-
-        # convert traj=['P21[->L3,->S20]', 'P20'] into ['P21', 'P3', 'S20', 'P20']
-        occur = []
-        for x in traj:
-            if '[' in x:
-                occur += extract_sides(x)
-            else:
-                occur.append(x)
-
-        occur = np.array([str(after) in x for x in occur])
         
-        # convert L3, S21, L3 into L3[->S21]
-        # convert L3[->P28,->S20], S21, L3 into L3[->P28,->S20,->S21]
-        if occur.sum():
-            if len(occur) == 1 or occur.sum() != 1: break
-            if str(after) != traj[-2].split('[')[0]: break
+        traj = append_traj(traj, after)
+        if not traj:
+            break
 
-            if '[' in traj[-2]:
-                traj[-2] = traj[-2][:-1]+',->'+str(traj[-1])+']'
-            else:
-                print("before", traj, after)
-                if '[' in traj[-1]:
-                    # example: ['61', '90', '50', '12[->37]'], after=50   
-                    # => 50[->12,->37]            
-                    side = ','.join([f"->{traj[-1][:traj[-1].find('[')]}"] + traj[-1][traj[-1].find('[')+1:-1].split(','))
-                    traj[-2]= f"{traj[-2]}[{side}]"                    
-                else:
-                    traj[-2] = f"{traj[-2]}[->{traj[-1]}]"
-                print("after", traj, after)
-            traj.pop(-1)
-        else:
-            traj.append(str(after))
 
     return traj, good
 
@@ -625,7 +639,7 @@ def sample_walks(G, graph, walks, model, all_nodes, r_lookup, predefined_graph):
             if ':' in n: continue            
             traj, good = sample_walk(n, G, graph, model, all_nodes)  
             if len(traj) > 1 and good:
-                name_traj, side_chain = process_good_traj(traj, all_nodes)                
+                name_traj = process_good_traj(traj, all_nodes)                
                 assert len(traj) == len(name_traj)
 
                 try:
