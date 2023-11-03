@@ -42,13 +42,14 @@ if __name__ == "__main__":
             # print(f"walk: {walk}, grps: {grps}")
             try:
                 root, conn = verify_walk(r_lookup, graph, grps)
-            except KeyError as e:
+            except (KeyError, RuntimeError) as e:
                 if type(e) == KeyError:
                     print(e)
-                    continue
                 else:
-                    breakpoint()
+                    print(e)
                 continue
+            if root.id:
+                breakpoint()
             dags[i] = (grps, root, conn)
            
             roots.append(root)
@@ -75,7 +76,6 @@ if __name__ == "__main__":
                 if (a.val,b.val,e) in used_edges:
                     do_color = False
             num_colors += do_color
-        print("num_colors", num_colors)
         for a, b, e in conn:            
             try:
                 graph[a.val][b.val][e]['weight'] = graph[a.val][b.val][e].get('weight', 0)+.5

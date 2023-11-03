@@ -11,7 +11,7 @@ import time
 import json
 from copy import deepcopy
 from math import factorial
-from torch_geometric.nn.conv import GINEConv, GINConv, GATConv
+from torch_geometric.nn.conv import GINEConv, GINConv, GATConv, GCNConv
 
 
 class DiffusionProcess:
@@ -190,6 +190,8 @@ class DiffusionGraph:
         self.processes = []
         self.index_lookup = self.modify_graph(dags, graph)
         for dag in dags:
+            if dag.id:
+                breakpoint()
             self.processes.append(DiffusionProcess(dag, self.index_lookup, **diffusion_args))
         self.graph = graph
 
@@ -205,7 +207,11 @@ class DiffusionGraph:
         max_value_count = {}
         for i, dag in enumerate(dags):
             value_counts = {}
+            if dag.id:
+                breakpoint()
             self.value_count(dag, value_counts)
+            if dag.id:
+                breakpoint()
             for k, v in value_counts.items():
                 max_value_count[k] = max(max_value_count.get(k, 0), v)
         
@@ -262,12 +268,11 @@ class L_grammar(nn.Module):
         super().__init__()
         self.diff_args = diff_args
         if diff_args['e_init']:
-            E = torch.as_tensor(nx.adjacency_matrix(G).toarray(), dtype=torch.float64)
+            E = torch.as_tensor(diff_args['init_e'], dtype=torch.float64)
         else:
             E = torch.zeros((N, N), dtype=torch.float64)    
-        self.E = E    
+        self.E = nn.Parameter(E)
         self.scale = nn.Parameter(torch.ones((1,), dtype=torch.float64))
-        self.W = nn.Parameter(E)
         self.A = torch.as_tensor(E.clone().detach(), dtype=torch.float64)
         self.context_layer = nn.Linear(N, N*N, dtype=torch.float64)
         nn.init.zeros_(self.context_layer.weight)
@@ -276,13 +281,13 @@ class L_grammar(nn.Module):
 
     def forward(self, X, context, t):
         if self.diff_args['combine_walks']:
-            L = torch.diag((self.W*self.A).sum(axis=0))-self.W # (N, N)
+            L = torch.diag((self.E*self.A).sum(axis=0))-self.E # (N, N)
         else:
             if self.diff_args['context_L']:
-                adjust = self.context_layer(context).reshape((-1,)+self.W.shape)
-                W_new = adjust + self.W # (M, N, N)
+                adjust = self.context_layer(context).reshape((-1,)+self.E.shape)
+                W_new = adjust + self.E # (M, N, N)
             else:
-                W_new = self.W
+                W_new = self.E
             L = torch.diag_embed(torch.matmul(W_new,self.A[None]).sum(axis=-2))-W_new # (M, N, N)
         
         context = context*t/(t+1) + X/(t+1)              
@@ -292,42 +297,77 @@ class L_grammar(nn.Module):
     
 
 class Predictor(nn.Module):
-    def __init__(self, input_dim=16, hidden_dim=16, num_layers=5, num_heads=2):
+    def __init__(self, input_dim=16, hidden_dim=16, num_layers=5, num_heads=2, gnn='gin', act='relu'):
         super().__init__()
         self.num_heads = num_heads
-        # assert input_dim == hidden_dim          
-        for i in range(1, num_layers+1):
-            if i > 1: input_dim = hidden_dim     
-            lin_i_1 = nn.Linear(input_dim, hidden_dim)
-            lin_i_2 = nn.Linear(hidden_dim, hidden_dim)
-            nn.init.zeros_(lin_i_1.weight)
-            nn.init.zeros_(lin_i_2.weight)
-            nn.init.zeros_(lin_i_1.bias)
-            nn.init.zeros_(lin_i_2.bias)            
-            mlp = nn.Sequential(lin_i_1, nn.ReLU(), lin_i_2)
-            # setattr(self, f"gnn_{i}", GATConv(in_channels=-1, out_channels=hidden_dim, edge_dim=1))
-            setattr(self, f"gnn_{i}", GINConv(mlp, edge_dim=1))
-        for i in range(1, num_heads+1):
-            lin_out = nn.Linear(hidden_dim, 1)
-            nn.init.zeros_(lin_out.weight)
-            nn.init.zeros_(lin_out.bias)
-            setattr(self, f"out_mlp_{i}", lin_out)            
         self.num_layers = num_layers
-        
-    
+        self.num_heads = num_heads
+        self.gnn = gnn
+        if act == 'relu':
+            act = nn.ReLU()
+        elif act == 'sigmoid':
+            act = nn.Sigmoid()
+        else:
+            raise
+        # assert input_dim == hidden_dim          
+        if gnn == 'gin':
+            for i in range(1, num_layers+1):
+                if i > 1: input_dim = hidden_dim     
+                lin_i_1 = nn.Linear(input_dim, hidden_dim)
+                lin_i_2 = nn.Linear(hidden_dim, hidden_dim)
+                # nn.init.zeros_(lin_i_1.weight)
+                # nn.init.zeros_(lin_i_2.weight)
+                # nn.init.zeros_(lin_i_1.bias)
+                # nn.init.zeros_(lin_i_2.bias)            
+                
+                # setattr(self, f"gnn_{i}", GATConv(in_channels=-1, out_channels=hidden_dim, edge_dim=1))
+                mlp = nn.Sequential(lin_i_1, act, lin_i_2)
+                setattr(self, f"gnn_{i}", GINConv(mlp, edge_dim=1))
+        elif gnn == 'gat':
+            setattr(self, f"gnn_conv", GATConv(input_dim, hidden_channels=hidden_dim, num_layers=num_layers, out_channels=hidden_dim))
+        elif gnn == 'gcn':
+            setattr(self, f"gnn_conv", GCNConv(input_dim, hidden_channels=hidden_dim, num_layers=num_layers, out_channels=hidden_dim))
+        else:
+            raise NotImplementedError            
 
-    def forward(self, X, edge_index, edge_attr):
-        for i in range(1, self.num_layers+1):
-            X = getattr(self, f"gnn_{i}")(X, edge_index)
+        for i in range(1, num_heads+1):
+            lin_out_1 = nn.Linear(hidden_dim, hidden_dim)
+            lin_out_2 = nn.Linear(hidden_dim, 1)
+            mlp_out = nn.Sequential(lin_out_1, act, lin_out_2)
+            # nn.init.zeros_(lin_out.weight)
+            # nn.init.zeros_(lin_out.bias)
+            setattr(self, f"out_mlp_{i}", mlp_out)            
+        
+        
+
+    def forward(self, X, edge_index, edge_weights):     
+        if self.gnn == 'gin':
+            for i in range(1, self.num_layers+1):
+                X = getattr(self, f"gnn_{i}")(X, edge_index)
+        elif self.gnn == 'gat':
+            X = getattr(self, f"gnn_conv")(X, edge_index, edge_weights)
+        elif self.gnn == 'gcn':
+            X = getattr(self, f"gnn_conv")(X, edge_index, edge_weights)
+        else:
+            raise
         props = [getattr(self, f"out_mlp_{i}")(X.sum(axis=0)) for i in range(1,self.num_heads+1)]
         return torch.cat(props, dim=-1)
     
+
+def state_to_probs(state):
+    state = torch.where(state>=0., state, 0.0)
+    return state/state.sum(axis=-1)
+    state = state - state.min(-1, True).values
+    return state/state.sum(axis=-1)
+
 
 
 def diffuse(graph, log_folder, **diff_args):
     G = graph.graph
     print(f"state at 0: {graph.get_state()}")    
     N, M = len(G), 1 if diff_args['combine_walks'] else len(graph.processes)
+    if diff_args['e_init']:
+        diff_args['init_e'] = nx.adjacency_matrix(G).toarray()
     model = L_grammar(N, diff_args)
     # if diff_args['e_init']:
     #     E = torch.as_tensor(nx.adjacency_matrix(G).toarray(), dtype=torch.float64)
@@ -344,6 +384,7 @@ def diffuse(graph, log_folder, **diff_args):
     opt = torch.optim.Adam(model.parameters(), lr=diff_args['alpha'])
     history = []
     T = 10
+    best_loss = float("inf")
     for i in range(diff_args['num_epochs']):
         graph.reset()
         context = torch.zeros((M, N), dtype=torch.float64)
@@ -364,7 +405,6 @@ def diffuse(graph, log_folder, **diff_args):
         print(f"epoch {i} loss: {np.mean(t_losses)}")
         history.append(np.mean(t_losses))
         
-        if i % 1000: continue
         fig = plt.Figure()
         ax = fig.add_subplot(1,1,1)
         ax.plot(history)
@@ -376,7 +416,10 @@ def diffuse(graph, log_folder, **diff_args):
         plot_file = os.path.join(log_folder, 'L_loss.png')
         fig.savefig(plot_file)
         print(plot_file)
-    torch.save(model.state_dict(), os.path.join(log_folder, 'ckpt.pt'))
+
+        if np.mean(t_losses) < best_loss:
+            best_loss = np.mean(t_losses)
+            torch.save(model.state_dict(), os.path.join(log_folder, 'ckpt.pt'))
     return model
 
 
@@ -443,10 +486,15 @@ def process_good_traj(traj, all_nodes):
     for x in traj:
         if '[' in x:
             side_chain = True
-            side = x.split('[')[1][:-1]
+            side = x[x.find('[')+1:x.rfind(']')]
+            if '[' in side:
+                breakpoint()
             new_side = []
             for y in side.split(','):
-                name = all_nodes[int(y[len('->'):])]
+                try:
+                    name = all_nodes[int(y[len('->'):])]
+                except:
+                    breakpoint()
                 new_side.append('->' + name.split(':')[0])
             side = ','.join(new_side)                        
             c = all_nodes[int(drop_colon(x.split('[')[0]))]+'['+side+']'
@@ -505,20 +553,19 @@ def sample_walk(n, G, graph, model, all_nodes):
     after = -1
     good = False   
     while True:      
-        print(f"input state {get_repr(state)}, context {get_repr(context)}, t {t}")  
+        # print(f"input state {get_repr(state)}, context {get_repr(context)}, t {t}")  
         update, context = model(state, context, t)
         if not (state>=0).all():
             breakpoint()
-        state = torch.where(state+update>=0., state+update, 0.0)
-        state = state/state.sum(axis=-1)
+        state = state_to_probs(state+update)
         t += 1
         state_numpy = state.detach().flatten().numpy()
         after = np.random.choice(len(state_numpy), p=state_numpy)        
-        try:
-            print(f"post state {get_repr(state)}, context {get_repr(context)}, t {t}")
-            print(f"sampled {after} with prob {state_numpy[after]}")
-        except:
-            breakpoint()
+        # try:
+        #     print(f"post state {get_repr(state)}, context {get_repr(context)}, t {t}")
+        #     print(f"sampled {after} with prob {state_numpy[after]}")
+        # except:
+        #     breakpoint()
         if ':' in all_nodes[after]:
             bad_ind = check_colon_order(all_nodes, traj, after)
             if bad_ind: break
@@ -555,7 +602,15 @@ def sample_walk(n, G, graph, model, all_nodes):
             if '[' in traj[-2]:
                 traj[-2] = traj[-2][:-1]+',->'+str(traj[-1])+']'
             else:
-                traj[-2] = f"{traj[-2]}[->{traj[-1]}]"
+                print("before", traj, after)
+                if '[' in traj[-1]:
+                    # example: ['61', '90', '50', '12[->37]'], after=50   
+                    # => 50[->12,->37]            
+                    side = ','.join([f"->{traj[-1][:traj[-1].find('[')]}"] + traj[-1][traj[-1].find('[')+1:-1].split(','))
+                    traj[-2]= f"{traj[-2]}[{side}]"                    
+                else:
+                    traj[-2] = f"{traj[-2]}[->{traj[-1]}]"
+                print("after", traj, after)
             traj.pop(-1)
         else:
             traj.append(str(after))
@@ -602,10 +657,10 @@ def main(args):
     data_copy = deepcopy(data)
     dags = []        
     for k, v in data.items():
-        grps, root_node, conn = v        
-        leaf_node, root_node, e = conn[-1]
+        grps, root_node, conn = v    
+        root_node, leaf_node, e = conn[-1]
+        assert root_node.id == 0
         leaf_node.add_child((root_node, e)) # breaks dag
-        root_node, leaf_node, e = conn[-2]
         root_node.parent = (leaf_node, e)
         root_node.dag_id = k
         dags.append(root_node)
@@ -627,6 +682,7 @@ def main(args):
         json.dump(E_dic, open(os.path.join(args.log_folder, 'E.json'), 'w+'))
     else:        
         log_dir = os.path.join('logs/', f'logs-{time.time()}/')
+        setattr(args, 'log_folder', log_dir)
         os.makedirs(log_dir, exist_ok=True)
         with open(os.path.join(log_dir, 'config.json'), 'w+') as f:
             json.dump(json.dumps(args.__dict__), f)        

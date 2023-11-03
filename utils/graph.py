@@ -1,9 +1,10 @@
 from .preprocess import *
 import numpy as np
 from itertools import product, permutations
+import random
 
-mols = load_mols('data/all_groups')
-annotate_extra(mols, 'data/all_groups/all_extra.txt')
+mols = load_mols('data/datasets/group-contrib/all_groups')
+annotate_extra(mols, 'data/datasets/group-contrib/all_groups/all_extra.txt')
 
 # mols = load_mols('data/datasets/pu_groups/all_groups')
 # annotate_extra(mols, 'data/datasets/pu_groups/all_groups/all_extra.txt')
@@ -279,7 +280,7 @@ def dfs_traverse(walk):
     conn = []
     id = 0
     if walk[len(walk)-1] != walk[0]: # come back to origin
-        walk.append(walk[0])
+        walk.append(walk[0])    
     for i in range(len(walk)-1):
         if '[' in walk[i]:
             start = walk[i].find('[')
@@ -324,12 +325,14 @@ def dfs_traverse(walk):
 def verify_walk(r_lookup, graph, walk):
     # r_lookup: dict(red group id: atoms)
     # check all edges exist
-    def find_edge(red_key, dir, r_grps):
-        for i, r_grp in r_grps.items():
-            if dir == 'k1' and r_grp == red_key['r_grp_1']:
-                return r_grp
-            if dir == 'k2' and r_grp == red_key['r_grp_2']:
-                return r_grp
+    def find_edge(a, b, r_grp_a, r_grp_b):
+        for i in range(len(graph[a.val][b.val])):
+            if graph[a.val][b.val][i]['r_grp_1'] != r_grp_a:
+                continue
+            if graph[a.val][b.val][i]['r_grp_2'] != r_grp_b:
+                continue            
+            return i
+        breakpoint()
     
     try:
         root, conn = dfs_traverse(walk)
@@ -339,38 +342,49 @@ def verify_walk(r_lookup, graph, walk):
     edge_conn = []
     bad = False
     
-    poss = defaultdict(set)
+    poss = defaultdict(list)
     for a, b in conn:
         if b.val not in graph[a.val]:
             raise KeyError(f"{a.val} {b.val} not connected")        
-        num_poss = len(graph[a.val][b.val])
-        for i in range(num_poss):
-            e = graph[a.val][b.val][i]
-            red_j1 = sorted(e['r_grp_1'])
-            poss[a.id].add(tuple(red_j1))
 
-    poss = {k: list(v) for (k,v) in poss.items()}
-    used_reds = defaultdict(set)
-    bad = True
-    for a, b in conn:
-        for red_j1 in poss[a.id]:
-            assert red_j1 in set(tuple(x) for x in r_lookup[a.val].values())
-            if set(red_j1) & used_reds[a]: 
+    num_tries = 100
+    for _ in range(num_tries):
+        used_reds = defaultdict(set)
+        for a, b in conn:
+            if a.id > b.id:
                 continue
-            else: 
+            bad = True
+            e_inds = list(range(len(graph[a.val][b.val])))
+            random.shuffle(e_inds)
+            for i in e_inds:
+                red_j1 = graph[a.val][b.val][i]['r_grp_1']
+                red_j2 = graph[a.val][b.val][i]['r_grp_2']
+                assert tuple(red_j1) in set(tuple(x) for x in r_lookup[a.val].values())
+                assert tuple(red_j2) in set(tuple(x) for x in r_lookup[b.val].values())
+                if set(red_j1) & used_reds[a.id]:
+                    continue
+                if set(red_j2) & used_reds[b.id]:
+                    continue
                 bad = False
-                used_reds[a] |= set(red_j1)
+                used_reds[a.id] |= set(red_j1)
+                used_reds[b.id] |= set(red_j2)
                 # print(f"{a.val}->{b.val}")
                 # print(f"used {used_reds[a]}")
                 edge_conn.append((a, b, i))
                 if b in a.children:
                     ind = a.children.index(b)
                     a.children[ind] = (b, i)
-                elif b == a.parent:
-                    a.parent = (b, i)
+                    assert b.parent == a
+                    if find_edge(a, b, red_j1, red_j2) != i:
+                        breakpoint()
+                    b.parent = (a, find_edge(b, a, red_j2, red_j1))
                 break
-        if bad:
-            raise
+            if bad:
+                break
+        if not bad:
+            break
+    if bad:
+        raise RuntimeError(walk)
      
     return root, edge_conn
 

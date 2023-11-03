@@ -3,7 +3,7 @@ import pickle
 import random
 import networkx as nx
 from utils import *
-from diffusion import L_grammar, Predictor, DiffusionGraph, DiffusionProcess, sample_walk, process_good_traj, get_repr
+from diffusion import L_grammar, Predictor, DiffusionGraph, DiffusionProcess, sample_walk, process_good_traj, get_repr, state_to_probs
 import json
 import torch
 import time
@@ -26,19 +26,16 @@ def walk_edge_weight(dag, graph, model, proc):
     state[0, start_node_ind] = 1.
     for j in range(1, len(walk_order)):
         cur_node_ind = graph.index_lookup[walk_order[j%len(walk_order)].val]   
-        print(f"input state {get_repr(state)}, context {get_repr(context)}, t {t}")               
+        # print(f"input state {get_repr(state)}, context {get_repr(context)}, t {t}")               
         update, context = model(state, context, t)
-        state = torch.where(state+update>=0., state+update, 0.0)
-        state = state/state.sum(axis=-1)
-        print(f"post state {get_repr(state)}, context {get_repr(context)}, t {t}")  
+        state = state_to_probs(state+update)
+        # print(f"post state {get_repr(state)}, context {get_repr(context)}, t {t}")  
         # dist = Categorical(state)
         # log_prob = dist.log_prob(cur_node_ind)
         t += 1
         W_adj[prev_node_ind, cur_node_ind] = state[0, cur_node_ind]
         W_adj[cur_node_ind, prev_node_ind] = state[0, cur_node_ind]
-        if state[0, cur_node_ind] == 0.:
-            breakpoint()
-        print(f"recounted {cur_node_ind} with prob {state[0, cur_node_ind]}")        
+        # print(f"recounted {cur_node_ind} with prob {state[0, cur_node_ind]}")        
         state = torch.zeros((1, N), dtype=torch.float64)
         state[0, cur_node_ind] = 1.
         prev_node_ind = cur_node_ind  
@@ -74,6 +71,8 @@ def train(args, dags, graph, diffusion_args, norm_props, mol_feats):
     G = graph.graph  
     N = len(G)    
 
+    if diffusion_args['e_init']:
+        diffusion_args['init_e'] = nx.adjacency_matrix(G).toarray()    
     model = L_grammar(len(G), diffusion_args)
     state = torch.load(os.path.join(args.grammar_folder, 'ckpt.pt'))
     model.load_state_dict(state)
@@ -84,7 +83,7 @@ def train(args, dags, graph, diffusion_args, norm_props, mol_feats):
         # Optimize E, theta with Loss(MLP(H_i), prop-values)
     
     # init EdgeConv GNN
-    predictor = Predictor(input_dim=args.input_dim, hidden_dim=args.hidden_dim, num_layers=args.num_layers, num_heads=2)
+    predictor = Predictor(input_dim=args.input_dim, hidden_dim=args.hidden_dim, num_layers=args.num_layers, num_heads=2, gnn=args.gnn, act=args.act)
     if args.predictor_ckpt:
         state = torch.load(args.predictor_ckpt)
         predictor.load_state_dict(state, strict=True)
@@ -121,18 +120,23 @@ def train(args, dags, graph, diffusion_args, norm_props, mol_feats):
         # compute edge control weighted adj matrix via model inference    
         
         graph.reset()
-        # random.shuffle(dags_copy)
+        # random.shuffle(dags_copy_train)
         train_loss_history = []
+        train_order = list(range(len(dags_copy_train)))
+        if args.shuffle:
+            random.shuffle(train_order)
         for i in range(len(dags_copy_train)):            
-            procs = all_procs[i]
-            if i % args.num_accumulation_steps == 1 % args.num_accumulation_steps: opt.zero_grad()            
+            ind = train_order[i]
+            procs = all_procs[ind]
+            if i % args.num_accumulation_steps == 1 % args.num_accumulation_steps: 
+                opt.zero_grad()            
             for proc in procs:
-                W_adj = walk_edge_weight(dags_copy_train[i], graph, model, proc)
+                W_adj = walk_edge_weight(dags_copy_train[ind], graph, model, proc)
                 # GNN with edge weight
                 node_attr, edge_index, edge_attr = W_to_attr(args, W_adj, mol_feats)            
                 X = node_attr
                 prop = do_predict(predictor, X, edge_index, edge_attr)                                          
-                loss = loss_func(prop, norm_props_train[i])            
+                loss = loss_func(prop, norm_props_train[ind])            
                 train_loss_history.append(loss.item())     
                 loss.backward()
             if args.augment_dfs:
@@ -194,12 +198,13 @@ def preprocess_data(all_dags, args, logs_folder):
         dag_ids[dag.dag_id] = dag
     for i, l in enumerate(lines):
         if i not in dag_ids: continue
-        prop = l.rstrip('\n').split(' ')[-1].split(',')
+        prop = l.rstrip('\n').split(' ')[-1]
+        prop = prop.strip('(').rstrip(')').split(',')
         prop = list(map(lambda x: float(x) if x != '-' else None, prop))
 
         if prop[0] and prop[1]:
             mask.append(i)
-            props.append([prop[0],prop[1]])
+            props.append([prop[0],prop[0]/prop[1]])
             dags.append(dag_ids[i])
     
     props = np.array(props)
@@ -224,6 +229,8 @@ def W_to_attr(args, W_adj, mol_feats):
         node_attr = W_adj
     else:
         node_attr = torch.as_tensor(mol_feats)
+    if args.feat_concat_W:
+        node_attr = torch.concat([node_attr, W_adj], dim=-1)
     return node_attr, edge_index, edge_attr
 
 
@@ -242,9 +249,9 @@ def main(args):
     dags = []
     for k, v in data.items():
         grps, root_node, conn = v
-        # leaf_node, root_node, e = conn[-1]
+        # root_node, leaf_node, e = conn[-1]
+        # assert root_node.id == 0
         # leaf_node.add_child((root_node, e)) # breaks dag
-        # root_node, leaf_node, e = conn[-2]
         # root_node.parent = (leaf_node, e)
         root_node.dag_id = k
         dags.append(root_node)
@@ -277,7 +284,7 @@ def main(args):
     elif args.mol_feat == 'unimol':
         unimol_feats = torch.load('data/group_reprs.pt')
         for i, unimol_feat in enumerate(unimol_feats):
-            unimol_feats[i] = unimol_feat.sum(axis=0)
+            unimol_feats[i] = unimol_feat.mean(axis=0)
         unimol_feats = torch.stack(unimol_feats)
         feat_lookup = {}
         for i in range(1,98):
@@ -289,15 +296,19 @@ def main(args):
     else:
         raise
 
-    
-    setattr(args, 'input_dim', len(mol_feats[0]))
+    input_dim = len(mol_feats[0])
+    if args.feat_concat_W: 
+        input_dim += len(G)
+    setattr(args, 'input_dim', input_dim)
 
     if args.predictor_file and args.grammar_file:    
         setattr(args, 'logs_folder', os.path.dirname(args.predictor_file))            
         model = L_grammar(N, diffusion_args)
         state = torch.load(args.grammar_file)
         model.load_state_dict(state)
-        predictor = Predictor(input_dim=args.input_dim, hidden_dim=args.hidden_dim, num_layers=args.num_layers, num_heads=2)
+        assert os.path.exists(os.path.join(args.logs_folder, 'config.json'))
+        config = json.loads(json.load(open(os.path.join(args.logs_folder, 'config.json'))))
+        predictor = Predictor(input_dim=config['input_dim'], hidden_dim=config['hidden_dim'], num_layers=config['num_layers'], num_heads=2)
         state = torch.load(os.path.join(args.predictor_file))
         predictor.load_state_dict(state)  
         model.eval()
@@ -369,12 +380,14 @@ def main(args):
         loss_history.append(nn.MSELoss()(prop, norm_props[i]).item())
         prop_npy = prop.detach().numpy()
         orig_preds.append(prop_npy)
-        for i in range(len(proc.dfs_order)-1):
-            a = proc.dfs_order[i]
-            b = proc.dfs_order[i+1]
-            if not W_adj[graph.index_lookup[a.val]][graph.index_lookup[b.val]]:
-                breakpoint()
-        all_walks['old'].append((data[dag.dag_id][-1], W_adj, props[i]))
+        for j in range(len(proc.dfs_order)-1):
+            a = proc.dfs_order[j]
+            b = proc.dfs_order[j+1]
+            # if not W_adj[graph.index_lookup[a.val]][graph.index_lookup[b.val]]:
+            #     breakpoint()
+        # get rid of cycle
+        conn = data[dag.dag_id][-1][:-1]
+        all_walks['old'].append((conn, W_adj, props[i]))
 
     print(np.mean(loss_history))
 
@@ -396,16 +409,16 @@ def main(args):
         for i, x in enumerate(novel):
             unnorm_prop = [x[-1][i]*std[i]+mean[i] for i in range(2)]
             out.append(unnorm_prop[0])            
-            out_2.append(unnorm_prop[0]/unnorm_prop[1])
+            out_2.append(unnorm_prop[1])
             novel[i][-1][0] = unnorm_prop[0]
-            novel[i][-1][1] = unnorm_prop[0]/unnorm_prop[1]
-            print(f"{x[0]},{','.join(list(map(str,unnorm_prop)))},{unnorm_prop[0]/unnorm_prop[1]}")
-            f.write(f"{x[0]},{','.join(list(map(str,unnorm_prop)))},{unnorm_prop[0]/unnorm_prop[1]}\n")
+            novel[i][-1][1] = unnorm_prop[1]
+            print(f"{x[0]},{','.join(list(map(str,unnorm_prop)))},{unnorm_prop[1]}")
+            f.write(f"{x[0]},{','.join(list(map(str,unnorm_prop)))},{unnorm_prop[1]}\n")
     
     orig_preds = [[orig_pred[i]*std[i]+mean[i] for i in range(2)] for orig_pred in orig_preds]
     out, out_2, orig_preds = np.array(out), np.array(out_2), np.array(orig_preds)
-    props[:,1] = props[:,0]/props[:,1]
-    orig_preds[:,1] = orig_preds[:,0]/orig_preds[:,1]
+    # props[:,1] = props[:,0]/props[:,1]
+    # orig_preds[:,1] = orig_preds[:,0]/orig_preds[:,1]
     p1, p2 = np.concatenate((out,props[:,0])), np.concatenate((out_2,props[:,1]))    
     pareto_1, not_pareto_1, pareto_2, not_pareto_2 = pareto_or_not(p1, p2, len(out), min_better=False)
     fig = plt.Figure()    
@@ -441,13 +454,13 @@ def main(args):
         for i in range(len(all_walks[key])):
             conn, W, prop = all_walks[key][i]
             pruned = []
-            for j, edge in enumerate(conn[:-2]):
+            for j, edge in enumerate(conn[:-1]):
                 a, b, e = edge
                 try:
                     w = W[graph.index_lookup[a.val]][graph.index_lookup[b.val]].item()
                 except:
                     breakpoint()
-                if w == 0.:
+                if key == 'novel' and w == 0.:
                     breakpoint()
                 pruned.append((a, b, e, w))
 
@@ -488,11 +501,15 @@ if __name__ == "__main__":
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--num_accumulation_steps', type=int, default=1)
     parser.add_argument('--opt', default='adam')
+    parser.add_argument('--shuffle', action='store_true')
 
     # model params
     parser.add_argument('--mol_feat', type=str, default='W', choices=['fp', 'one_hot', 'ones', 'W', 'unimol'])
+    parser.add_argument('--feat_concat_W', action='store_true')
     parser.add_argument('--hidden_dim', type=int, default=16)
     parser.add_argument('--num_layers', type=int, default=5)
+    parser.add_argument('--gnn', default='gin')
+    parser.add_argument('--act', default='relu')
 
     # sampling params
     parser.add_argument('--num_generate_samples', type=int, default=100)
