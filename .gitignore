@@ -1,6 +1,8 @@
-baselines/Uni-Core/
+baselines/Uni-Core/unicore.egg-info/
 baselines/pretrained_weights/
-baselines/uni_mol_scripts/
-baselines/MolCLR/
-baselines/Uni-Mol/
+baselines/uni_mol_scripts/exp/
+baselines/uni_mol_scripts/logs/
+baselines/MolCLR/finetune/
 baselines/*.sh
+
+baselines/Uni-Mol/
