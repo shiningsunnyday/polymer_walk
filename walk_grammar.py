@@ -26,7 +26,7 @@ if __name__ == "__main__":
     name_to_id = {name_group(i+1):i+1 for i in range(len(mols))}
 
     # a bunch of asserts
-    # checks = []
+    checks = []
     # checks.append('L3 S32'.split(' '))
     # checks.append('P15 P18'.split(' '))
     # checks.append('L4 P40'.split(' '))
@@ -145,13 +145,16 @@ if __name__ == "__main__":
     # checks.append('S15 L4'.split(' '))
     # checks.append('P15 S32'.split(' '))
     # checks.append('P15 S2'.split(' '))
-    # checks.append('P15 S32'.split(' '))
+    # checks.append('S21 S6'.split(' '))
     # for check in checks:
     #     if not reds_isomorphic(*[name_to_id[c] for c in check]):
     #         if 'P40' not in check:
     #             breakpoint()
-    # breakpoint()
-
+    os.makedirs(os.path.join(args.motifs_folder, f'with_label/'), exist_ok=True)
+    for i, mol in enumerate(mols):
+        Draw.MolToFile(mol, os.path.join(args.motifs_folder, f'with_label/{i+1}.png'), size=(2000, 2000))
+        Draw.MolToFile(mol, os.path.join(args.motifs_folder, f'with_label/{name_group(i+1)}.png'), size=(2000, 2000))
+    breakpoint()
     with Pool(32) as p:    
         res = p.starmap(reds_isomorphic, pargs)  
     # res = []
@@ -161,7 +164,7 @@ if __name__ == "__main__":
     for (a, b), k in zip(pargs, res):
         if not k: continue
         max_size = max([len(key[0]+key[1]) for key in k])
-        k = [key for key in k if len(key[0]+key[1])==max_size]
+        k = [key for key in k if len(key[0]+key[1])==max_size] + [key for key in k if len(key[0]+key[1])!=max_size]
         for i, key in enumerate(k):
             r_grp_1, b1, b2, r_grp_2 = key
             G.add_edge(name_group(a), name_group(b), key=i, r_grp_1=r_grp_1, b1=b1, b2=b2, r_grp_2=r_grp_2)
@@ -187,6 +190,3 @@ if __name__ == "__main__":
                     )    
     nx.draw(G, pos=pos, with_labels=True, ax=ax)        
     fig.savefig(args.out_path.replace('.adjlist', '.png'))
-    os.makedirs(os.path.join(args.motifs_folder, f'with_label/'), exist_ok=True)
-    for i, mol in enumerate(mols):
-        Draw.MolToFile(mol, os.path.join(args.motifs_folder, f'with_label/{i+1}.png'), size=(2000, 2000))
