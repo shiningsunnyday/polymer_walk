@@ -383,7 +383,7 @@ def diffuse(graph, log_folder, **diff_args):
     # parameters = [W, scale]+list(context_layer.parameters())
     opt = torch.optim.Adam(model.parameters(), lr=diff_args['alpha'])
     history = []
-    T = 10
+    T = 100
     best_loss = float("inf")
     for i in range(diff_args['num_epochs']):
         graph.reset()
@@ -673,7 +673,8 @@ def main(args):
     for k, v in data.items():
         grps, root_node, conn = v    
         root_node, leaf_node, e = conn[-1]
-        assert root_node.id == 0
+        if root_node.id != 0:
+            breakpoint()
         leaf_node.add_child((root_node, e)) # breaks dag
         root_node.parent = (leaf_node, e)
         root_node.dag_id = k

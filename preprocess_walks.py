@@ -26,6 +26,6 @@ if __name__ == "__main__":
             prop_val = line.split()[2:][0]
             walks.append(line.split(' ')[1]+' '+prop_val)
     with open(args.data.replace('.txt', '_preprocess.txt'), 'w+') as f:
-        for w in walks:
-            f.write(f"{w}\n")
+        for l, w in zip(lines, walks):
+            f.write(f"{l.split()[0]} {w}\n")
             

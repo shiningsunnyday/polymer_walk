@@ -2,6 +2,7 @@ from .preprocess import *
 import numpy as np
 from itertools import product, permutations
 import random
+import networkx as nx
 
 mols = load_mols('data/datasets/group-contrib/all_groups')
 annotate_extra(mols, 'data/datasets/group-contrib/all_groups/all_extra.txt')
@@ -226,6 +227,88 @@ def extract_chain(walk):
             j += 1
     return res   
 
+# string parsing approach
+def chain_extract(walk, predefined_graph):
+    def get_alpha(walk, i):
+        j = i+1
+        while j<len(walk):
+            if not walk[j].isalnum():
+                break
+            j += 1
+        return j-1
+        
+    graph = nx.DiGraph()
+    prev_node = -1
+    e = -1
+    inner = False
+    side = False
+    i = 0   
+    last_main_node = 0 
+    while i < len(walk):
+        if walk[i] == '-':
+            j = i+1
+            while j<len(walk):
+                if walk[j] == '>':
+                    break
+                j += 1
+            try:
+                e = int(walk[i+1:j])
+            except:
+                breakpoint()
+            i = j+1
+        elif walk[i].isalnum():
+            j = get_alpha(walk, i)
+            if j+1 == len(walk): # last node
+                new_node = 0
+            else:
+                new_node = len(graph)
+            graph.add_node(new_node, val=walk[i:j+1], side=inner)
+            if not inner:
+                last_main_node = new_node
+            if prev_node >= 0:
+                try:
+                    prev_val = graph.nodes[prev_node]['val']
+                    new_val = graph.nodes[new_node]['val']
+                    r_grp_1 = predefined_graph[prev_val][new_val][e]['r_grp_1']            
+                    r_grp_2 = predefined_graph[prev_val][new_val][e]['r_grp_2']                    
+                except:
+                    breakpoint()
+
+                graph.add_edge(prev_node, new_node, e=e, r_grp_1=r_grp_1, r_grp_2=r_grp_2)
+            e = -1
+            i = j+1
+            if inner:
+                side = True            
+            if not inner or side:
+                prev_node = new_node
+
+        elif walk[i] == ',':
+            side = False
+            prev_node = last_main_node
+            i += 1
+        elif walk[i] == '[':
+            inner = True            
+            i += 1
+        elif walk[i] == ']':
+            inner = False
+            side = False
+            prev_node = last_main_node
+            i += 1
+        else:
+            breakpoint()
+            raise
+
+    map = {}
+    for node in graph.nodes(data=True):
+        map[node[0]] = node[1]['val']
+    for edge in graph.edges(data=True):        
+        print(f"{map[edge[0]]}:{edge[0]}->{map[edge[1]]}:{edge[1]}, {edge[2]['e']}")
+      
+    return graph
+
+
+
+
 
 def extract(x):
     return int(x.split('[')[0]) if '[' in x else int(x)
@@ -275,6 +358,22 @@ def bfs_traverse(G):
 
 
 def dfs_traverse(walk):
+    """
+    walk can be a list, e.g. [L3, S32, S20[->S1,->S1], S32, >L3]
+    or a graph, e.g. 
+        L3:0->S32:1, 2
+        S32:1->S20:2, 2
+        S20:2->S1:3, 1
+        S20:2->S1:4, 4
+        S20:2->S32:5, 2
+        S32:5->L3:6, 2
+    add, for every connected a, b
+        (Node for a, Node for b)
+        (Node for b, Node for a)
+    to conn
+    at the end, connect last leaf, root node and do the same
+    return root node, conn
+    """
     prev_node = None
     root_node = None
     conn = []
@@ -322,6 +421,51 @@ def dfs_traverse(walk):
     return root_node, conn
 
 
+def traverse_dfs(walk, graph):
+    def find_e(a, b, e1):
+        r_grp_1 = graph[a][b][e1]['r_grp_1']
+        r_grp_2 = graph[a][b][e1]['r_grp_2']
+        e2s = []
+        for e2, e2_data in graph[b][a].items():
+            if e2_data['r_grp_1'] == r_grp_2 and e2_data['r_grp_2'] == r_grp_1:
+                e2s.append(e2)
+        assert len(e2s) == 1
+        return e2s[0]
+    conn = []
+    start = list(walk.nodes)[0]
+    vis = [False for n in walk.nodes()]
+    nodes = [None for n in walk.nodes()]
+    to_do = [start]
+    root_node = Node(None, [], walk.nodes[start]['val'], 0)
+    nodes[start] = root_node
+    while to_do:
+        cur = to_do.pop()
+        vis[cur] = True
+        neis = sorted((walk.nodes[j]['side'], j) for j in walk[cur])
+        for side, j in neis:
+            if vis[j]:
+                if j:
+                    breakpoint()            
+                else: # cycle back to root
+                    e = walk[cur][j]['e'] 
+                    e_cyc = find_e(nodes[cur].val, nodes[j].val, e)       
+                    nodes[cur].add_child((nodes[j], e))
+                    nodes[j].parent = (nodes[cur], e_cyc)
+                    conn.append((nodes[j], nodes[cur], e_cyc))                    
+                    break
+            to_do.append(j)
+            node = Node(nodes[cur], [], walk.nodes[j]['val'], j, side)
+            nodes[j] = node    
+            e = walk[cur][j]['e']        
+            nodes[cur].add_child((nodes[j], e))
+            nodes[j].parent = (nodes[cur], find_e(nodes[cur].val, nodes[j].val, e))
+            conn.append((nodes[cur], nodes[j], e))
+    
+
+    return root_node, conn
+          
+
+
 def verify_walk(r_lookup, graph, walk):
     # r_lookup: dict(red group id: atoms)
     # check all edges exist
@@ -332,59 +476,79 @@ def verify_walk(r_lookup, graph, walk):
             if graph[a.val][b.val][i]['r_grp_2'] != r_grp_b:
                 continue            
             return i
-        breakpoint()
     
-    try:
-        root, conn = dfs_traverse(walk)
-    except:
-        raise
-    used_reds = defaultdict(set)
-    edge_conn = []
-    bad = False
-    
-    poss = defaultdict(list)
-    for a, b in conn:
-        if b.val not in graph[a.val]:
-            raise KeyError(f"{a.val} {b.val} not connected")        
-
-    num_tries = 100
-    for _ in range(num_tries):
-        used_reds = defaultdict(set)
-        for a, b in conn:
-            if a.id > b.id:
-                continue
-            bad = True
-            e_inds = list(range(len(graph[a.val][b.val])))
-            random.shuffle(e_inds)
-            for i in e_inds:
+    try:         
+        if isinstance(walk, nx.Graph):
+            root, edge_conn = traverse_dfs(walk, graph)
+            used_reds = defaultdict(set)
+            for a, b, i in edge_conn:
                 red_j1 = graph[a.val][b.val][i]['r_grp_1']
                 red_j2 = graph[a.val][b.val][i]['r_grp_2']
                 assert tuple(red_j1) in set(tuple(x) for x in r_lookup[a.val].values())
                 assert tuple(red_j2) in set(tuple(x) for x in r_lookup[b.val].values())
                 if set(red_j1) & used_reds[a.id]:
-                    continue
+                    breakpoint()
                 if set(red_j2) & used_reds[b.id]:
-                    continue
-                bad = False
+                    breakpoint()
                 used_reds[a.id] |= set(red_j1)
-                used_reds[b.id] |= set(red_j2)
-                # print(f"{a.val}->{b.val}")
-                # print(f"used {used_reds[a]}")
-                edge_conn.append((a, b, i))
-                if b in a.children:
-                    ind = a.children.index(b)
-                    a.children[ind] = (b, i)
-                    assert b.parent == a
-                    if find_edge(a, b, red_j1, red_j2) != i:
-                        breakpoint()
-                    b.parent = (a, find_edge(b, a, red_j2, red_j1))
-                break
+                used_reds[b.id] |= set(red_j2)            
+            print("pass!")
+        elif isinstance(walk, list):
+            root, conn = dfs_traverse(walk)
+            """
+            if no edge info is provided, this is a terrible code to guess possible connections
+            so that no red atom is every used twice
+            rather than exhausitively enumerate the product of all connections, try num_tries
+            """            
+            for a, b in conn:
+                if b.val not in graph[a.val]:
+                    raise KeyError(f"{a.val} {b.val} not connected")        
+        
+            num_tries = 100
+            for _ in range(num_tries):
+                edge_conn = []                
+                used_reds = defaultdict(set)
+                for a, b in conn:
+                    if a.id > b.id:
+                        continue
+                    bad = True
+                    e_inds = list(range(len(graph[a.val][b.val])))
+                    random.shuffle(e_inds)
+                    for i in e_inds:
+                        red_j1 = graph[a.val][b.val][i]['r_grp_1']
+                        red_j2 = graph[a.val][b.val][i]['r_grp_2']
+                        assert tuple(red_j1) in set(tuple(x) for x in r_lookup[a.val].values())
+                        assert tuple(red_j2) in set(tuple(x) for x in r_lookup[b.val].values())
+                        if set(red_j1) & used_reds[a.id]:
+                            continue
+                        if set(red_j2) & used_reds[b.id]:
+                            continue
+                        bad = False
+                        used_reds[a.id] |= set(red_j1)
+                        used_reds[b.id] |= set(red_j2)
+                        # print(f"{a.val}->{b.val}")
+                        # print(f"used {used_reds[a]}")
+                        edge_conn.append((a, b, i))
+                        if b in a.children:
+                            ind = a.children.index(b)
+                            a.children[ind] = (b, i)
+                            assert b.parent == a
+                            if find_edge(a, b, red_j1, red_j2) != i:
+                                breakpoint()
+                            b.parent = (a, find_edge(b, a, red_j2, red_j1))
+                        break
+                    if bad:
+                        break
+                if not bad:
+                    break
             if bad:
-                break
-        if not bad:
-            break
-    if bad:
-        raise RuntimeError(walk)
-     
+                raise RuntimeError(walk)               
+        else: 
+            raise NotImplementedError
+    except Exception as e:
+        raise e
+         
     return root, edge_conn
+
+
 
