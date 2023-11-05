@@ -1,0 +1,6 @@
+baselines/Uni-Core/
+baselines/pretrained_weights/
+baselines/uni_mol_scripts/
+baselines/MolCLR/
+baselines/Uni-Mol/
+baselines/*.sh
