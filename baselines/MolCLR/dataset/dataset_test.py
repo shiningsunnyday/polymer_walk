@@ -99,6 +99,11 @@ def read_smiles(data_path, target, task):
             smiles = row['smiles']
             label = row[target]
             mol = Chem.MolFromSmiles(smiles)
+            
+            if mol is None:
+                mol = Chem.MolFromSmarts(smiles)
+                smiles = Chem.MolToSmiles(mol)
+                
             if mol != None and label != '':
                 smiles_data.append(smiles)
                 if task == 'classification':
@@ -124,8 +129,16 @@ class MolTestDataset(Dataset):
 
     def __getitem__(self, index):
         mol = Chem.MolFromSmiles(self.smiles_data[index])
-        mol = Chem.AddHs(mol)
-
+        if mol is None:
+            mol = Chem.MolFromSmarts(self.smiles_data[index])
+        else:
+            mol = Chem.AddHs(mol)
+        
+        try:
+            assert mol is not None
+        except:
+            import pdb; pdb.set_trace()
+            
         N = mol.GetNumAtoms()
         M = mol.GetNumBonds()
 
@@ -206,6 +219,7 @@ class MolTestDatasetWrapper(object):
             # split = int(np.floor(self.valid_size * num_train))
             # split2 = int(np.floor(self.test_size * num_train))
             # valid_idx, test_idx, train_idx = indices[:split], indices[split:split+split2], indices[split+split2:]
+            print("train_idx: ", train_idx)
         
         elif self.splitting == 'scaffold':
             train_idx, valid_idx, test_idx = scaffold_split(train_dataset, self.valid_size, self.test_size)

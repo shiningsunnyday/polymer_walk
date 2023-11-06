@@ -70,7 +70,7 @@ class FineTune(object):
         if config['dataset']['task'] == 'classification':
             self.criterion = nn.CrossEntropyLoss()
         elif config['dataset']['task'] == 'regression':
-            if self.config["task_name"] in ['qm7', 'qm8', 'qm9', 'Permeability']:
+            if self.config["task_name"] in ['qm7', 'qm8', 'qm9', 'Permeability', 'group_ctb']:
                 self.criterion = nn.L1Loss()
             else:
                 self.criterion = nn.MSELoss()
@@ -103,7 +103,7 @@ class FineTune(object):
         train_loader, valid_loader, test_loader = self.dataset.get_data_loaders()
 
         self.normalizer = None
-        if self.config["task_name"] in ['qm7', 'qm9', 'Permeability']:
+        if self.config["task_name"] in ['qm7', 'qm9', 'Permeability', 'group_ctb']:
             labels = []
             # for d, __ in train_loader:
             for d in train_loader:
@@ -143,7 +143,10 @@ class FineTune(object):
         model_checkpoints_folder = os.path.join(self.writer.log_dir, 'checkpoints')
 
         # save config file
-        _save_config_file(model_checkpoints_folder)
+        # _save_config_file(model_checkpoints_folder)
+        
+        if not os.path.exists(model_checkpoints_folder):
+            os.makedirs(model_checkpoints_folder)
 
         n_iter = 0
         valid_n_iter = 0
@@ -240,7 +243,7 @@ class FineTune(object):
         if self.config['dataset']['task'] == 'regression':
             predictions = np.array(predictions)
             labels = np.array(labels)
-            if self.config['task_name'] in ['qm7', 'qm8', 'qm9', 'Permeability']:
+            if self.config['task_name'] in ['qm7', 'qm8', 'qm9', 'Permeability', 'group_ctb']:
                 mae = mean_absolute_error(labels, predictions)
                 print('Validation loss:', valid_loss, 'MAE:', mae)
                 return valid_loss, mae
@@ -299,10 +302,11 @@ class FineTune(object):
         if self.config['dataset']['task'] == 'regression':
             predictions = np.array(predictions)
             labels = np.array(labels)
-            if self.config['task_name'] in ['qm7', 'qm8', 'qm9', 'Permeability']:
+            if self.config['task_name'] in ['qm7', 'qm8', 'qm9', 'Permeability', 'group_ctb']:
                 self.mae = mean_absolute_error(labels, predictions)
                 self.r2 = r2_score(labels, predictions)
-                print('Test loss:', test_loss, 'Test MAE:', self.mae, 'Test R2:', self.r2)
+                self.rmse = mean_squared_error(labels, predictions, squared=False)
+                print('Test loss:', test_loss, 'Test MAE:', self.mae, 'Test RMSE:', self.rmse, 'Test R2:', self.r2)
             else:
                 self.rmse = mean_squared_error(labels, predictions, squared=False)
                 print('Test loss:', test_loss, 'Test RMSE:', self.rmse)
@@ -323,8 +327,8 @@ def main(config):
     if config['dataset']['task'] == 'classification':
         return fine_tune.roc_auc
     if config['dataset']['task'] == 'regression':
-        if config['task_name'] in ['qm7', 'qm8', 'qm9', 'Permeability']:
-            return (fine_tune.mae, fine_tune.r2)
+        if config['task_name'] in ['qm7', 'qm8', 'qm9', 'Permeability', 'group_ctb']:
+            return (fine_tune.mae, fine_tune.r2, fine_tune.rmse)
         else:
             return fine_tune.rmse
 
@@ -429,6 +433,11 @@ if __name__ == "__main__":
         config['dataset']['data_path'] = '/research/cbim/vast/zz500/Projects/mhg/ICML2024/polymer_walk/datasets/datasetA_permeability.csv'
         target_list = ["log10_He_Bayesian", "log10_H2_Bayesian", "log10_O2_Bayesian", "log10_N2_Bayesian", "log10_CO2_Bayesian", "log10_CH4_Bayesian"]
 
+    elif config["task_name"] == 'group_ctb':
+        config['dataset']['task'] = 'regression'
+        config['dataset']['data_path'] = '/research/cbim/vast/zz500/Projects/mhg/ICML2024/polymer_walk/datasets/group_ctb.csv'
+        target_list = ["permeability_H2", "selectivity_H2_N2"]
+
     else:
         raise ValueError('Undefined downstream task!')
 
@@ -442,22 +451,26 @@ if __name__ == "__main__":
             config['dataset']['target'] = target
             result = main(config)
             if target not in results_dict.keys():
-                results_dict[target] = {"metrics": [(result[0].item(), result[1].item())]}
+                results_dict[target] = {"metrics": [(result[0].item(), result[1].item(), result[2].item())]}
             else:
-                results_dict[target]["metrics"].append((result[0].item(), result[1].item()))
+                results_dict[target]["metrics"].append((result[0].item(), result[1].item(), result[2].item()))
         
     for target in results_dict.keys():
         all_mae = [r[0] for r in results_dict[target]["metrics"]]
         all_r2 = [r[1] for r in results_dict[target]["metrics"]]
+        all_rmse = [r[2] for r in results_dict[target]["metrics"]]
         assert len(all_mae) == num_expr
         assert len(all_r2) == num_expr
+        assert len(all_rmse) == num_expr
         results_dict[target]['mae_mean'] = np.mean(all_mae).item()
         results_dict[target]['mae_std'] = np.std(all_mae).item()
         results_dict[target]['r2_mean'] = np.mean(all_r2).item()
         results_dict[target]['r2_std'] = np.std(all_r2).item()
+        results_dict[target]['rmse_mean'] = np.mean(all_rmse).item()
+        results_dict[target]['rmse_std'] = np.std(all_rmse).item()
         
-    with open('finetune/{}_{}_finetune.json'.format(config['fine_tune_from'], config['task_name']), 'w') as fp:
-        json.dump(results_dict, fp)
+    with open('results/MolCLR_{}_{}.json'.format(config['fine_tune_from'], config['task_name']), 'w') as fp:
+        json.dump(results_dict, fp, indent=4)
             
     # os.makedirs('experiments', exist_ok=True)
     # df = pd.DataFrame(results_list)
