@@ -51,7 +51,6 @@ if __name__ == "__main__":
     conns = []
     if os.path.isfile(args.data_file):
         lines = open(args.data_file).readlines()
-
         # run some tests
         run_tests(r_lookup, graph)
         files = set()
@@ -68,7 +67,7 @@ if __name__ == "__main__":
                     os.makedirs(args.save_edges_dir, exist_ok=True)
                     save_file = os.path.join(args.save_edges_dir, f'{name}.edgelist')
                     if save_file in files:
-                        breakpoint()
+                        breakpoint()                    
                     nx.write_edgelist(grps, save_file, data=True)                
                     files.add(save_file)
             except (KeyError, RuntimeError) as e:
@@ -80,19 +79,29 @@ if __name__ == "__main__":
                 continue            
             if root.id:
                 breakpoint()
-            dags[i] = (grps, root, conn)
-           
+            dags[i] = (grps, root, conn)           
             roots.append(root)
             conns.append(conn)
     else: # other dataset
-        for f in os.listdir(args.data_file):
+        lines = sorted(os.listdir(args.data_file), key=lambda f: int(''.join(list(filter(lambda x: x.isdigit(), f)))))
+        for f in lines:
             G = nx.read_edgelist(os.path.join(args.data_file, f), create_using=nx.MultiDiGraph)
             if not G.nodes():
+                print(f"{f} no nodes")
                 continue
             if max(len(cyc) for cyc in nx.simple_cycles(G)) > 2: # length > 2 is problem
                 print(f"{f} has cycle")
                 continue
-            root, conn = bfs_traverse(G)
+            try:
+                root, conn = bfs_traverse(G, graph)         
+            except (KeyError, RuntimeError) as e:
+                if type(e) == KeyError:
+                    print(e)
+                else:
+                    breakpoint()
+                continue
+            if root.id:
+                breakpoint()
             dags[int(f.split('walk_')[-1].split('.')[0])] = (None, root, conn)
             roots.append(root)
             conns.append(conn)
@@ -121,7 +130,8 @@ if __name__ == "__main__":
                 continue
                           
 
-    if args.out_path: 
+    if args.out_path:
+        breakpoint()
         print(f"processed {len(dags)}/{len(lines)} dags")
         pickle.dump(dags, open(args.out_path, 'wb+'))
         breakpoint()

@@ -3,9 +3,13 @@ import numpy as np
 from itertools import product, permutations
 import random
 import networkx as nx
+import sys
+sys.path.append('/home/msun415/my_data_efficient_grammar/')
 
-mols = load_mols('data/datasets/group-contrib/all_groups')
-annotate_extra(mols, 'data/datasets/group-contrib/all_groups/all_extra.txt')
+from fuseprop import __extract_subgraph
+
+# mols = load_mols('data/datasets/group-contrib/all_groups')
+# annotate_extra(mols, 'data/datasets/group-contrib/all_groups/all_extra.txt')
 
 # mols = load_mols('data/datasets/pu_groups/all_groups')
 # annotate_extra(mols, 'data/datasets/pu_groups/all_groups/all_extra.txt')
@@ -13,8 +17,8 @@ annotate_extra(mols, 'data/datasets/group-contrib/all_groups/all_extra.txt')
 # mols = load_mols('data/datasets/lipophilicity/all_groups')
 # annotate_extra(mols, 'data/datasets/lipophilicity/all_groups/all_extra.txt')
 
-# mols = load_mols('data/datasets/datasetA_permeability/all_groups')
-# annotate_extra(mols, 'data/datasets/datasetA_permeability/all_groups/all_extra.txt')
+mols = load_mols('data/datasets/datasetA_permeability/all_groups')
+annotate_extra(mols, 'data/datasets/datasetA_permeability/all_groups/all_extra.txt')
 
 class Node:
     def __init__(self, parent, children, val, id, side_chain=False):        
@@ -47,9 +51,9 @@ def enumerate_black_subsets(mol, k):
     for i, a in enumerate(mol.GetAtoms()):
         if not a.GetBoolProp('r'):
             b.append(i)
-    if k in [1,2,3,4,5]:
+    if k in [1,2,3,4]:
         return permutations(b, k)
-    elif k == 6:
+    elif k in [5,6]:
         res = []
         for ring in mol.GetRingInfo().AtomRings():
             for a in ring:
@@ -124,8 +128,7 @@ def check_isomorphic(mol1, mol2, v1, v2):
     #     breakpoint()
     #     debug = True
     if len(v1) != len(v2): 
-        return False
-   
+        return False   
     for i in range(len(v1)):
         a1 = mol1.GetAtomWithIdx(v1[i])
         a2 = mol2.GetAtomWithIdx(v2[i])
@@ -148,17 +151,55 @@ def check_isomorphic(mol1, mol2, v1, v2):
     return True
 
 
+def extract_subgraph(mol, selected_atoms): 
+    subgraph_mapped, roots = __extract_subgraph(mol, selected_atoms) 
+    subgraph = Chem.MolToSmiles(subgraph_mapped)
+    assert '.' not in subgraph
+    subgraph = Chem.MolFromSmiles(subgraph)
+    if subgraph is not None:
+        return subgraph, subgraph_mapped, roots
+    else:
+        return None, subgraph_mapped, None
+    
+
+
+def substruct_matches(mol, subgraph):
+    mol_copy = Chem.Mol(mol)
+    res = list(map(list, mol_copy.GetSubstructMatches(subgraph)))
+    if not res:
+        # Chem.Kekulize(mol_copy)
+        # res = list(map(list, mol_copy.GetSubstructMatches(subgraph)))
+        suppl = Chem.ResonanceMolSupplier(mol_copy, Chem.KEKULE_ALL)
+        for supp in suppl:
+            res += list(map(list, supp.GetSubstructMatches(subgraph)))
+    return res
+    
+
 def find_isomorphic(mol1, mol2, r_grp_1):
     b2s = []
+    mapped_subgraph = extract_subgraph(mol1, r_grp_1)[1]
+    b2s_new = substruct_matches(mol2, mapped_subgraph)
+    for ring in b2s_new:
+        for i in range(len(ring)):
+            b2s.append(list(ring[i:]+ring[:i]))
+            # b2s.append(list(reversed(b2s[-1])))
+    return b2s
     for b2 in enumerate_black_subsets(mol2, len(r_grp_1)):
         b2 = list(b2)
         if len(r_grp_1) != len(b2): continue
         if check_isomorphic(mol1, mol2, r_grp_1, b2): 
             b2s.append(b2)
+    breakpoint()
     return b2s
 
 
 def red_isomorphic(m1, m2, r_grp_1, r_grp_2):
+    # if m1 == 30 and m2 == 6 and r_grp_1 == [16]:
+    #     breakpoint()    
+    # if m1 == 57 and m2 == 59:
+    #     breakpoint()
+    # if m1 == 219 and m2 == 222:
+    #     breakpoint()
     b2s = find_isomorphic(mols[m1-1], mols[m2-1], r_grp_1)
     # if not b2s:
     #     if r_grp_1: 
@@ -188,6 +229,12 @@ def red_isomorphic(m1, m2, r_grp_1, r_grp_2):
 
 
 def reds_isomorphic(m1, m2):
+    # if m1 == 57 and m2 == 59:
+    #     breakpoint()
+    # if name_group(m1)== 'G30' and name_group(m2) == 'G6':
+    #     breakpoint()
+    # if m1 == 219 and m2 == 222:
+    #     breakpoint()
     print(name_group(m1), name_group(m2))
     r_grp_m1 = list_red_members(mols[m1-1])
     r_grp_m2 = list_red_members(mols[m2-1])
@@ -327,10 +374,20 @@ def search_walk(i, walk, graph, cur):
     return []
 
 
-def bfs_traverse(G):
+def find_e(a, b, e1):
+    r_grp_1 = graph[a][b][e1]['r_grp_1']
+    r_grp_2 = graph[a][b][e1]['r_grp_2']
+    e2s = []
+    for e2, e2_data in graph[b][a].items():
+        if e2_data['r_grp_1'] == r_grp_2 and e2_data['r_grp_2'] == r_grp_1:
+            e2s.append(e2)
+    assert len(e2s) == 1
+    return e2s[0]
+
+
+def bfs_traverse(G, graph):
     """
-    differences with verify_walk:
-    - 
+    Difference with verify_walk is that G is a graph, instead of a walk
     """
     start = list(G.nodes)[0]
     prev_node = Node(None, [], start.split(':')[0], 0)
@@ -340,11 +397,19 @@ def bfs_traverse(G):
     vis[start] = True
     conn = []
     root_node = prev_node
+    circ_edge = None
     while bfs:
         prev_node = bfs.pop(0)
+        is_leaf = True
         for cur in G[prev_node.val]:            
-            if vis[cur]: continue
-            i = list(G[prev_node.val][cur])[0]
+            if vis[cur]:
+                continue
+            is_leaf = False
+            assert len(G[prev_node.val][cur]) == 1
+            r_grp_1 = G[prev_node.val][cur][0]['r_grp_1']
+            r_grp_2 = G[prev_node.val][cur][0]['r_grp_2']
+            i = find_edge(graph, prev_node.val.split(':')[0], cur.split(':')[0], r_grp_1, r_grp_2)
+            # i = list(graph[prev_node.val][cur])[0]
             cur_node = Node((prev_node, i), [], cur.split(':')[0], id)
             id += 1
             prev_node.add_child((cur_node, i))
@@ -353,7 +418,12 @@ def bfs_traverse(G):
             conn.append((cur_node, prev_node, i))
             vis[cur] = True
             bfs.append(cur_node)
-
+    #     if is_leaf and root_node.val in graph[prev_node.val]:
+    #         circ_edge = (root_node, prev_node)
+    # if circ_edge is None:
+    #     breakpoint()
+    if root_node.id:
+        breakpoint()
     return root_node, conn   
 
 
@@ -422,15 +492,6 @@ def dfs_traverse(walk):
 
 
 def traverse_dfs(walk, graph):
-    def find_e(a, b, e1):
-        r_grp_1 = graph[a][b][e1]['r_grp_1']
-        r_grp_2 = graph[a][b][e1]['r_grp_2']
-        e2s = []
-        for e2, e2_data in graph[b][a].items():
-            if e2_data['r_grp_1'] == r_grp_2 and e2_data['r_grp_2'] == r_grp_1:
-                e2s.append(e2)
-        assert len(e2s) == 1
-        return e2s[0]
     conn = []
     start = list(walk.nodes)[0]
     vis = [False for n in walk.nodes()]
@@ -465,17 +526,18 @@ def traverse_dfs(walk, graph):
     return root_node, conn
           
 
+def find_edge(graph, a, b, r_grp_a, r_grp_b):
+    for i in range(len(graph[a][b])):
+        if graph[a][b][i]['r_grp_1'] != r_grp_a:
+            continue
+        if graph[a][b][i]['r_grp_2'] != r_grp_b:
+            continue            
+        return i          
+
 
 def verify_walk(r_lookup, graph, walk):
     # r_lookup: dict(red group id: atoms)
     # check all edges exist
-    def find_edge(a, b, r_grp_a, r_grp_b):
-        for i in range(len(graph[a.val][b.val])):
-            if graph[a.val][b.val][i]['r_grp_1'] != r_grp_a:
-                continue
-            if graph[a.val][b.val][i]['r_grp_2'] != r_grp_b:
-                continue            
-            return i
     
     try:         
         if isinstance(walk, nx.Graph):
@@ -533,9 +595,9 @@ def verify_walk(r_lookup, graph, walk):
                             ind = a.children.index(b)
                             a.children[ind] = (b, i)
                             assert b.parent == a
-                            if find_edge(a, b, red_j1, red_j2) != i:
+                            if find_edge(graph, a.val, b.val, red_j1, red_j2) != i:
                                 breakpoint()
-                            b.parent = (a, find_edge(b, a, red_j2, red_j1))
+                            b.parent = (a, find_edge(graph, b.val, a.val, red_j2, red_j1))
                         break
                     if bad:
                         break

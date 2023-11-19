@@ -14,6 +14,7 @@ if __name__ == "__main__":
     parser.add_argument('--extra_label_path')
     parser.add_argument('--out_path')
     parser.add_argument('--motifs_folder')
+    parser.add_argument('--walks_folder', help='If given, will check that all edges are represented')
     args = parser.parse_args()
     mols = load_mols(args.motifs_folder)    
     red_grps = annotate_extra(mols, args.extra_label_path)
@@ -22,7 +23,6 @@ if __name__ == "__main__":
     # for i in range(41):
     #     G.add_node(name_group(i+1))
     pargs = [(i+1, j+1) for i in range(len(mols)) for j in range(len(mols))]        
-
     name_to_id = {name_group(i+1):i+1 for i in range(len(mols))}
 
     # a bunch of asserts
@@ -146,6 +146,19 @@ if __name__ == "__main__":
     # checks.append('P15 S32'.split(' '))
     # checks.append('P15 S2'.split(' '))
     # checks.append('S21 S6'.split(' '))
+    # checks.append('G204 G48'.split())
+    # bad_set = set()
+    # if args.walks_folder:
+    #     lines = sorted(os.listdir(args.walks_folder), key=lambda f: int(''.join(list(filter(lambda x: x.isdigit(), f)))))
+    #     for f in lines:
+    #         G = nx.read_edgelist(os.path.join(args.walks_folder, f), create_using=nx.MultiDiGraph)
+    #         if not G.nodes():
+    #             continue
+    #         for e in G.edges:
+    #             checks.append((e[0].split(':')[0], e[1].split(':')[0]))
+    #             if not reds_isomorphic(*[name_to_id[c] for c in checks[-1]]):                
+    #                 breakpoint()
+    #                 bad_set.add(f)
     # for check in checks:
     #     if not reds_isomorphic(*[name_to_id[c] for c in check]):
     #         if 'P40' not in check:
@@ -154,13 +167,13 @@ if __name__ == "__main__":
     for i, mol in enumerate(mols):
         Draw.MolToFile(mol, os.path.join(args.motifs_folder, f'with_label/{i+1}.png'), size=(2000, 2000))
         Draw.MolToFile(mol, os.path.join(args.motifs_folder, f'with_label/{name_group(i+1)}.png'), size=(2000, 2000))
-    breakpoint()
     with Pool(32) as p:    
         res = p.starmap(reds_isomorphic, pargs)  
     # res = []
     # for arg in pargs:
     #     res.append(reds_isomorphic(*arg))  
 
+    print("done!")
     for (a, b), k in zip(pargs, res):
         if not k: continue
         max_size = max([len(key[0]+key[1]) for key in k])
@@ -173,7 +186,6 @@ if __name__ == "__main__":
     
     nx.write_adjlist(G, args.out_path)
     nx.write_edgelist(G, args.out_path.replace('adjlist', 'edgelist'), data=True)
-    breakpoint()
     fig = plt.Figure(figsize=(200, 200))
     ax = fig.add_subplot()
     pos = nx.circular_layout(G)
