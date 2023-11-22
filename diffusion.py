@@ -296,12 +296,27 @@ class L_grammar(nn.Module):
     
 
 class Predictor(nn.Module):
-    def __init__(self, input_dim=16, hidden_dim=16, num_layers=5, num_heads=2, gnn='gin', act='relu'):
+    def __init__(self,
+                 input_dim=16, 
+                 hidden_dim=16, 
+                 num_layers=5, 
+                 num_heads=2, 
+                 gnn='gin', 
+                 act='relu', 
+                 share_params=True,
+                 in_mlp=False,
+                 dropout_rate=0,
+                 **kwargs):
         super().__init__()
         self.num_heads = num_heads
         self.num_layers = num_layers
         self.num_heads = num_heads
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
         self.gnn = gnn
+        self.in_mlp = in_mlp
+        self.share_params = share_params
+        self.dropout_rate = dropout_rate
         if act == 'relu':
             act = nn.ReLU()
         elif act == 'sigmoid':
@@ -309,30 +324,55 @@ class Predictor(nn.Module):
         else:
             raise
         # assert input_dim == hidden_dim          
+        if self.in_mlp:
+            for i in range(1, num_heads+1):
+                if share_params and i < num_heads:
+                    continue
+                lin_out_1 = nn.Linear(input_dim, hidden_dim)
+                lin_out_2 = nn.Linear(hidden_dim, hidden_dim)
+                dropout = nn.Dropout(self.dropout_rate)
+                mlp_in = nn.Sequential(lin_out_1, act, dropout, lin_out_2)
+                # nn.init.zeros_(lin_out.weight)
+                # nn.init.zeros_(lin_out.bias)
+                layer_name = f"in_mlp" if share_params else f"in_mlp_{i}"
+                setattr(self, layer_name, mlp_in)
+
         if gnn == 'gin':
-            for i in range(1, num_layers+1):
-                if i > 1: input_dim = hidden_dim     
-                lin_i_1 = nn.Linear(input_dim, hidden_dim)
-                lin_i_2 = nn.Linear(hidden_dim, hidden_dim)
-                # nn.init.zeros_(lin_i_1.weight)
-                # nn.init.zeros_(lin_i_2.weight)
-                # nn.init.zeros_(lin_i_1.bias)
-                # nn.init.zeros_(lin_i_2.bias)            
-                
-                # setattr(self, f"gnn_{i}", GATConv(in_channels=-1, out_channels=hidden_dim, edge_dim=1))
-                mlp = nn.Sequential(lin_i_1, act, lin_i_2)
-                setattr(self, f"gnn_{i}", GINConv(mlp, edge_dim=1))
-        elif gnn == 'gat':
-            setattr(self, f"gnn_conv", GATConv(input_dim, hidden_channels=hidden_dim, num_layers=num_layers, out_channels=hidden_dim))
-        elif gnn == 'gcn':
-            setattr(self, f"gnn_conv", GCNConv(input_dim, hidden_channels=hidden_dim, num_layers=num_layers, out_channels=hidden_dim))
+            for j in range(1, num_heads+1):
+                if share_params and j < num_heads:
+                    continue
+                input_dim = hidden_dim if self.in_mlp else self.input_dim
+                if gnn == 'gin':
+                    for i in range(1, num_layers+1):
+                        if i > 1: 
+                            input_dim = hidden_dim     
+                        lin_i_1 = nn.Linear(input_dim, hidden_dim)
+                        lin_i_2 = nn.Linear(hidden_dim, hidden_dim)
+                        dropout = nn.Dropout(self.dropout_rate)
+                        # nn.init.zeros_(lin_i_1.weight)
+                        # nn.init.zeros_(lin_i_2.weight)
+                        # nn.init.zeros_(lin_i_1.bias)
+                        # nn.init.zeros_(lin_i_2.bias)                                    
+                        # setattr(self, f"gnn_{i}", GATConv(in_channels=-1, out_channels=hidden_dim, edge_dim=1))
+                        mlp = nn.Sequential(lin_i_1, act, dropout, lin_i_2)
+                        layer_name = f"gnn_{i}" if share_params else f"gnn_{i}_{j}"
+                        setattr(self, layer_name, GINConv(mlp, edge_dim=1))               
+        elif gnn in ['gat', 'gcn']:
+            layer_name = {'gat': GATConv, 'gcn': GCNConv}
+            if share_params:
+                setattr(self, f"gnn_conv", layer_name[gnn](input_dim, hidden_channels=hidden_dim, num_layers=num_layers, out_channels=hidden_dim))
+            else:
+                for j in range(1, num_heads+1):
+                    setattr(self, f"gnn_conv_{j}", layer_name[gnn](input_dim, hidden_channels=hidden_dim, num_layers=num_layers, out_channels=hidden_dim))
         else:
-            raise NotImplementedError            
+            raise NotImplementedError  
+                      
 
         for i in range(1, num_heads+1):
             lin_out_1 = nn.Linear(hidden_dim, hidden_dim)
+            dropout = nn.Dropout(self.dropout_rate)
             lin_out_2 = nn.Linear(hidden_dim, 1)
-            mlp_out = nn.Sequential(lin_out_1, act, lin_out_2)
+            mlp_out = nn.Sequential(lin_out_1, act, dropout, lin_out_2)
             # nn.init.zeros_(lin_out.weight)
             # nn.init.zeros_(lin_out.bias)
             setattr(self, f"out_mlp_{i}", mlp_out)            
@@ -341,15 +381,42 @@ class Predictor(nn.Module):
 
     def forward(self, X, edge_index, edge_weights):     
         if self.gnn == 'gin':
-            for i in range(1, self.num_layers+1):
-                X = getattr(self, f"gnn_{i}")(X, edge_index)
-        elif self.gnn == 'gat':
-            X = getattr(self, f"gnn_conv")(X, edge_index, edge_weights)
-        elif self.gnn == 'gcn':
-            X = getattr(self, f"gnn_conv")(X, edge_index, edge_weights)
+            head_outs = []
+            for j in range(1, self.num_heads+1):
+                if self.share_params and j < self.num_heads:
+                    continue
+                X_out = X.clone()
+                if self.in_mlp:
+                    X_out = getattr(self, "in_mlp" if self.share_params else f"in_mlp_{j}")(X_out)
+                for i in range(1, self.num_layers+1):
+                    layer_name = f"gnn_{i}" if self.share_params else f"gnn_{i}_{j}"
+                    X_out = getattr(self, layer_name)(X_out, edge_index)
+                head_outs.append(X_out)
+            if self.share_params:
+                assert len(head_outs) == 1
+                X = head_outs[0]
+                props = [getattr(self, f"out_mlp_{i}")(X.sum(axis=0)) for i in range(1,self.num_heads+1)] 
+            else:
+                assert len(head_outs) == self.num_heads
+                props = [getattr(self, f"out_mlp_{i}")(head_outs[i-1].sum(axis=0)) for i in range(1,self.num_heads+1)] 
+        elif self.gnn in ['gat', 'gcn']:
+            if self.share_params:
+                if self.in_mlp:
+                    X = getattr(self, "in_mlp" if self.share_params else f"in_mlp_{j}")(X)                
+                X = getattr(self, f"gnn_conv")(X, edge_index, edge_weights)
+                props = [getattr(self, f"out_mlp_{i}")(X.sum(axis=0)) for i in range(1,self.num_heads+1)]
+            else:
+                head_outs = []
+                for j in range(1, self.num_heads+1):   
+                    X_out = X.clone()  
+                    if self.in_mlp:
+                        X_out = getattr(self, "in_mlp" if self.share_params else f"in_mlp_{j}")(X_out)                       
+                    X_out = getattr(self, f"gnn_conv_{j}")(X_out, edge_index, edge_weights)          
+                    head_outs.append(X_out)
+                props = [getattr(self, f"out_mlp_{i}")(head_outs[i-1].sum(axis=0)) for i in range(1,self.num_heads+1)] 
         else:
             raise
-        props = [getattr(self, f"out_mlp_{i}")(X.sum(axis=0)) for i in range(1,self.num_heads+1)]
+        
         return torch.cat(props, dim=-1)
     
 
@@ -557,7 +624,7 @@ def append_traj(traj, after):
     if occur.sum():
         if len(occur) == 1 or occur.sum() != 1: return []
         if str(after) != traj[-2].split('[')[0]: return []
-        print("before", traj, after)
+        # print("before", traj, after)
         if '[' in traj[-2]:
             if '[' in traj[-1]:
                 # example: ['90', '50[->8]', '4[->25]'] 50
@@ -577,7 +644,7 @@ def append_traj(traj, after):
             else:
                 traj[-2] = f"{traj[-2]}[->{traj[-1]}]"            
         traj.pop(-1)
-        print("after", traj, after)
+        # print("after", traj, after)
     else:
         traj.append(str(after))    
     return traj

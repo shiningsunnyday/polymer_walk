@@ -102,6 +102,31 @@ def mol_to_graph(mol, inds, r=False):
     return graph
 
 
+def dag_to_graph(dag):
+    graph = nx.DiGraph()
+    bfs = [dag]
+    graph.add_node(0, val=dag.val)
+    while bfs:
+        cur = bfs[0]
+        bfs = bfs[1:]
+        for j in cur.children:
+            if isinstance(j, tuple):
+                j = j[0]
+            if j.id:
+                graph.add_node(j.id, val=j.val.split(':')[0])
+                bfs.append(j)
+    return graph
+
+
+def dag_isomorphic(dag1, dag2):
+    def node_match(a, b):
+        return a['val'] == b['val']
+    g1 = dag_to_graph(dag1)
+    g2 = dag_to_graph(dag2)
+    return nx.isomorphism.is_isomorphic(g1, g2, node_match)
+    
+
+
 def check_order(orig_mol, mol, cls, r=False):
     """
     Check whether subgraph induced by cls ~ mol
@@ -614,3 +639,9 @@ def verify_walk(r_lookup, graph, walk):
 
 
 
+def is_novel(dags, root):
+    for dag in dags:
+        if dag_isomorphic(dag, root):
+            return False
+    return True
+    

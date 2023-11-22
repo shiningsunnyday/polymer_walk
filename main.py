@@ -11,6 +11,8 @@ import torch.nn as nn
 import matplotlib.pyplot as plt
 from copy import deepcopy
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import r2_score
+import pandas as pd
 
 def walk_edge_weight(dag, graph, model, proc):
     N = len(graph.graph)
@@ -42,13 +44,13 @@ def walk_edge_weight(dag, graph, model, proc):
     return W_adj 
 
 
-def train(args, dags, graph, diffusion_args, norm_props, mol_feats):
+def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats):
     dags_copy = deepcopy(dags)
     if args.test_size:
-        dags_copy_train, dags_copy_test, norm_props_train, norm_props_test = train_test_split(dags_copy, norm_props, test_size=args.test_size, random_state=42)
+        dags_copy_train, dags_copy_test, norm_props_train, norm_props_test, props_train, props_test, train_inds, test_inds = train_test_split(dags_copy, norm_props, props, list(range(len(dags_copy))), test_size=args.test_size, random_state=42)
     else:
-        dags_copy_train, dags_copy_test, norm_props_train, norm_props_test = dags_copy, dags_copy, norm_props, norm_props
-
+        dags_copy_train, dags_copy_test, norm_props_train, norm_props_test, props_train, props_test, train_inds, test_inds = dags_copy, dags_copy, norm_props, norm_props, props, props, list(range(len(dags_copy))), list(range(len(dags_copy)))
+    print(f"{len(dags_copy_train)} train dags, {len(dags_copy_test)} test dags")
     all_procs = []
     # data augmentation
     for i in range(len(dags_copy_train)):
@@ -83,7 +85,15 @@ def train(args, dags, graph, diffusion_args, norm_props, mol_feats):
         # Optimize E, theta with Loss(MLP(H_i), prop-values)
     
     # init EdgeConv GNN
-    predictor = Predictor(input_dim=args.input_dim, hidden_dim=args.hidden_dim, num_layers=args.num_layers, num_heads=2, gnn=args.gnn, act=args.act)
+    predictor = Predictor(input_dim=args.input_dim, 
+                          hidden_dim=args.hidden_dim, 
+                          num_layers=args.num_layers, 
+                          num_heads=2, 
+                          gnn=args.gnn, 
+                          act=args.act, 
+                          share_params=args.share_params,
+                          in_mlp=args.in_mlp,
+                          dropout_rate=args.dropout_rate)
     if args.predictor_ckpt:
         state = torch.load(args.predictor_ckpt)
         predictor.load_state_dict(state, strict=True)
@@ -104,21 +114,18 @@ def train(args, dags, graph, diffusion_args, norm_props, mol_feats):
     loss_func = nn.MSELoss()   
     history = []
     train_history = []
+    metrics = []
     best_loss = float("inf")
     print(args.logs_folder)
-    for i in range(len(dags_copy_train)):            
-        procs = all_procs[i]
-        for proc in procs:
-            W_adj = walk_edge_weight(dags_copy_train[i], graph, model, proc)
-            # GNN with edge weight
-            node_attr, edge_index, edge_attr = W_to_attr(args, W_adj, mol_feats)            
-            X = node_attr
-            prop = do_predict(predictor, X, edge_index, edge_attr)          
+    mean_and_std = np.loadtxt(os.path.join(args.logs_folder,'mean_and_std.txt'))
+    mean = mean_and_std[:,0]
+    std = mean_and_std[:,1]        
 
-            
+    best_maes = [float("inf"), float("inf")]
+    best_epochs = [0, 0]
     for epoch in range(args.num_epochs):        
         # compute edge control weighted adj matrix via model inference    
-        
+        predictor.train()
         graph.reset()
         # random.shuffle(dags_copy_train)
         train_loss_history = []
@@ -129,7 +136,7 @@ def train(args, dags, graph, diffusion_args, norm_props, mol_feats):
             ind = train_order[i]
             procs = all_procs[ind]
             if i % args.num_accumulation_steps == 1 % args.num_accumulation_steps: 
-                opt.zero_grad()            
+                opt.zero_grad()         
             for proc in procs:
                 W_adj = walk_edge_weight(dags_copy_train[ind], graph, model, proc)
                 # GNN with edge weight
@@ -144,11 +151,13 @@ def train(args, dags, graph, diffusion_args, norm_props, mol_feats):
                 for p in all_params:
                     if p.requires_grad:
                         p.grad /= len(procs)
-            if i % args.num_accumulation_steps == 0:                 
+            if i == len(dags_copy_train)-1 or i % args.num_accumulation_steps == 0:                 
                 opt.step()
 
         graph.reset()
+        test_preds = []
         loss_history = []
+        predictor.eval()
         with torch.no_grad():
             for i in range(len(dags_copy_test)):                        
                 W_adj = walk_edge_weight(dags_copy_test[i], graph, model, graph.lookup_process(dags_copy_test[i].dag_id))
@@ -157,7 +166,9 @@ def train(args, dags, graph, diffusion_args, norm_props, mol_feats):
                 X = node_attr
                 prop = do_predict(predictor, X, edge_index, edge_attr)                          
                 loss = loss_func(prop, norm_props_test[i])            
-                loss_history.append(loss.item())                   
+                loss_history.append(loss.item())
+                test_preds.append((prop*std+mean).numpy())
+
 
 
         if np.mean(loss_history) < best_loss:
@@ -168,7 +179,44 @@ def train(args, dags, graph, diffusion_args, norm_props, mol_feats):
                 torch.save(model.state_dict(), os.path.join(args.logs_folder, f'grammar_ckpt_{best_loss}.pt'))
             
         history.append(np.mean(loss_history))
-        train_history.append(np.mean(train_loss_history))
+        train_history.append(np.mean(train_loss_history))        
+        y_hat = np.array(test_preds)
+        y = np.array(props_test)
+        col_names = ['H2','N2','O2','CH4','CO2']
+        i1, i2 = args.property_cols
+        metric_names = [f'permeability_{col_names[i1]}', f'selectivity_{col_names[i1]}_{col_names[i2]}']
+        metric = {}
+        for i in range(len(mean)):
+            r2 = r2_score(y[:,i], y_hat[:,i])
+            mae = np.abs(y_hat[:,i]-y[:,i]).mean()
+            mse = ((y_hat[:,i]-y[:,i])**2).mean()
+
+            if mae < best_maes[i]:
+                best_epochs[i] = len(metrics)
+                best_maes[i] = mae
+                print(f"epoch {epoch} best {metric_names[i]} mae: {mae}")
+                best_epoch_r2 = r2
+                best_epoch_mae = mae
+                best_epoch_mse = mse
+            else:
+                best_epoch_r2 = metrics[best_epochs[i]][f'{metric_names[i]}_r^2']
+                best_epoch_mae = metrics[best_epochs[i]][f'{metric_names[i]}_mae']
+                best_epoch_mse = metrics[best_epochs[i]][f'{metric_names[i]}_mse']
+                 
+            metric.update({
+                f'{metric_names[i]}_r^2': r2,
+                f'{metric_names[i]}_mae': mae,
+                f'{metric_names[i]}_mse': mse,
+            })        
+            metric.update({
+                f'best_{metric_names[i]}_r^2': best_epoch_r2,
+                f'best_{metric_names[i]}_mae': best_epoch_mae,
+                f'best_{metric_names[i]}_mse': best_epoch_mse,
+            })        
+                        
+        metrics.append(metric)
+        df = pd.DataFrame(metrics)
+        df.to_csv(os.path.join(args.logs_folder, 'metrics.csv'))
         fig_path = os.path.join(args.logs_folder, 'predictor_loss.png')
         fig = plt.Figure()
         ax = fig.add_subplot(1,1,1)
@@ -192,7 +240,7 @@ def preprocess_data(all_dags, args, logs_folder):
     lines = open(args.walks_file).readlines()
     props = []
     dag_ids = {}
-    dags = []    
+    dags = []
     mask = []
     for dag in all_dags:
         dag_ids[dag.dag_id] = dag
@@ -201,18 +249,22 @@ def preprocess_data(all_dags, args, logs_folder):
         breakpoint()
         prop = l.rstrip('\n').split(' ')[-1]
         prop = prop.strip('(').rstrip(')').split(',')
-        prop = list(map(lambda x: float(x) if x != '-' else None, prop))
-
-        if prop[0] and prop[1]:
+        try:
+            prop = list(map(lambda x: float(x) if x not in ['-','_'] else None, prop))
+        except:
+            print(l)
+     
+        i1, i2 = args.property_cols
+        if prop[i1] and prop[i2]:
             mask.append(i)
-            props.append([prop[0],prop[0]/prop[1]])
+            props.append([prop[i1],prop[i1]/prop[i2]])
             dags.append(dag_ids[i])
     
     props = np.array(props)
     mean, std = np.mean(props,axis=0,keepdims=True), np.std(props,axis=0,keepdims=True)    
     with open(os.path.join(logs_folder, 'mean_and_std.txt'), 'w+') as f:
         for i in range(props.shape[-1]):                
-            f.write(f"{mean[0,i]},{std[0,i]}\n")
+            f.write(f"{mean[0,i]} {std[0,i]}\n")
     
     norm_props = torch.FloatTensor((props-mean)/std)  
     return props, norm_props, dags, mask
@@ -316,7 +368,7 @@ def main(args):
         model.load_state_dict(state)
         assert os.path.exists(os.path.join(args.logs_folder, 'config.json'))
         config = json.loads(json.load(open(os.path.join(args.logs_folder, 'config.json'))))
-        predictor = Predictor(input_dim=config['input_dim'], hidden_dim=config['hidden_dim'], num_layers=config['num_layers'], num_heads=2)
+        predictor = Predictor(num_heads=2, **config)
         state = torch.load(os.path.join(args.predictor_file))
         predictor.load_state_dict(state)  
         model.eval()
@@ -330,17 +382,18 @@ def main(args):
             json.dump(json.dumps(args.__dict__), f)  
 
         props, norm_props, dags, mask = preprocess_data(dags, args, args.logs_folder)            
-        model, predictor = train(args, dags, graph, diffusion_args, norm_props, mol_feats)
+        model, predictor = train(args, dags, graph, diffusion_args, props, norm_props, mol_feats)
        
     graph.reset()
     trajs = []
-    novel = []   
-    lines = open(args.walks_file).readlines()  
+    novel = []
+    lines = open(args.walks_file).readlines()
     walks = set()
     for i, l in enumerate(lines):        
-        walk = l.rstrip('\n').split(' ')[0]
+        walk = l.rstrip('\n').split(' ')[-2] # -1 is prop val
         walks.add(walk)
     new_novel = 1
+    seen_dags = deepcopy(dags)
     while len(novel) < args.num_generate_samples:
         print(f"add {new_novel} samples, now {len(novel)} novel samples")
         new_novel = 0
@@ -356,7 +409,8 @@ def main(args):
                     name_traj = '->'.join(name_traj)
                     trajs.append(name_traj)
                     # print(name_traj, "success")
-                    if name_traj not in walks:
+                    if is_novel(seen_dags, root):
+                        seen_dags.append(root)
                         print(name_traj, "novel")
                         walks.add(name_traj)                        
                         proc = DiffusionProcess(root, graph.index_lookup, **diffusion_args)
@@ -369,6 +423,8 @@ def main(args):
                         novel.append((name_traj, root, edge_conn, W_adj, prop.detach().numpy()))
                         new_novel += 1
                         # p (lambda W_adj,edge_conn,graph:[[a.id,a.val,b.id,b.val,e,W_adj[graph.index_lookup[a.val]][graph.index_lookup[b.val]].item(),W_adj[graph.index_lookup[b.val]][graph.index_lookup[a.val]].item()] for (a,b,e) in edge_conn])(W_adj,edge_conn,graph)                            
+                    else:
+                        print(f"{name_traj} discovered")
                 except:
                     pass
             
@@ -392,6 +448,8 @@ def main(args):
             # if not W_adj[graph.index_lookup[a.val]][graph.index_lookup[b.val]]:
             #     breakpoint()
         # get rid of cycle
+        if not conn:
+            breakpoint()
         conn = data[dag.dag_id][-1][:-1]
         all_walks['old'].append((conn, W_adj, props[i]))
 
@@ -403,15 +461,17 @@ def main(args):
         while True:
             line = f.readline()
             if not line: break
-            prop_mean, prop_std = map(float, line.split(','))
+            prop_mean, prop_std = map(float, line.split())
             mean.append(prop_mean)
             std.append(prop_std)
             
 
     out = []
     out_2 = []
+    col_names = ['H2','N2','O2','CH4','CO2']
+    i1, i2 = args.property_cols
     with open(os.path.join(args.logs_folder, 'novel_props.txt'), 'w+') as f:
-        f.write("walk,H_2,N_2,H_2/N_2\n")
+        f.write(f"walk,{col_names[i1]},{col_names[i2]},{col_names[i1]}/{col_names[i2]}\n")
         for i, x in enumerate(novel):
             unnorm_prop = [x[-1][i]*std[i]+mean[i] for i in range(2)]
             out.append(unnorm_prop[0])            
@@ -427,14 +487,14 @@ def main(args):
     pareto_1, not_pareto_1, pareto_2, not_pareto_2 = pareto_or_not(p1, p2, len(out), min_better=False)
     fig = plt.Figure()    
     ax = fig.add_subplot(1, 1, 1)
-    ax.set_title('(H_2, H_2/N_2) of original vs novel monomers')
+    ax.set_title(f'({col_names[i1]}, {col_names[i1]}/{col_names[i2]}) of original vs novel monomers')
     ax.scatter(out[not_pareto_1], out_2[not_pareto_1], c='b', label='predicted values of novel monomers')
     ax.scatter(out[pareto_1], out_2[pareto_1], c='b', marker='v')    
     ax.scatter(props[:,0][not_pareto_2], props[:,1][not_pareto_2], c='g', label='ground-truth values of original monomers')
     ax.scatter(props[:,0][pareto_2], props[:,1][pareto_2], c='g', marker='v')
     ax.scatter(orig_preds[:,0], orig_preds[:,1], c='r', label='predicted values of original monomers')
-    ax.set_xlabel('Permeability H2')
-    ax.set_ylabel('Selectivity H_2/N_2')
+    ax.set_xlabel(f'Permeability {col_names[i1]}')
+    ax.set_ylabel(f'Selectivity {col_names[i1]}/{col_names[i2]}')
     ax.set_ylim(ymin=0)
     ax.legend()
     ax.grid(True)    
@@ -452,18 +512,19 @@ def main(args):
             f.write(n[0]+'\n')
 
     with open(os.path.join(args.logs_folder, 'novel_props.txt'), 'w+') as f:
-        f.write("walk,H_2,N_2,H_2/N_2,is_pareto\n")
+        f.write(f"walk,{col_names[i1]},{col_names[i2]},{col_names[i1]}/{col_names[i2]},is_pareto\n")
         for i, x in enumerate(novel):
             print(f"{x[0]},{','.join(list(map(str,novel[i][-1][:2])))},{i in pareto_1}")
             f.write(f"{x[0]},{','.join(list(map(str,novel[i][-1][:2])))},{i in pareto_1}\n")
 
-
-    all_walks['novel'] = [(x[2], x[-2], x[-1]) for x in novel]  
+    for x in novel:
+        assert not (x[2][-1][0].id and x[2][-1][1].id) # last edge is assumed to have root
+    all_walks['novel'] = [(x[2][:-1], x[-2], x[-1]) for x in novel]  
     for key in ['old', 'novel']:
         for i in range(len(all_walks[key])):
             conn, W, prop = all_walks[key][i]
             pruned = []
-            for j, edge in enumerate(conn[:-1]):
+            for j, edge in enumerate(conn):
                 a, b, e = edge
                 try:
                     w = W[graph.index_lookup[a.val]][graph.index_lookup[b.val]].item()
@@ -472,7 +533,8 @@ def main(args):
                 if key == 'novel' and w == 0.:
                     breakpoint()
                 pruned.append((a, b, e, w))
-
+            if not pruned:
+                breakpoint()
             all_walks[key][i] = (pruned, prop)
      
                     
@@ -519,7 +581,9 @@ if __name__ == "__main__":
     # data params
     parser.add_argument('--predefined_graph_file')    
     parser.add_argument('--dags_file')
-    parser.add_argument('--walks_file')    
+    parser.add_argument('--walks_file') 
+    parser.add_argument('--property_cols', type=int, default=[0,1], nargs='+', 
+                        help='for group contrib, expect 2 cols of the respective permeabilities')
     parser.add_argument('--augment_dfs', action='store_true')
     parser.add_argument('--augment_order', action='store_true')
     parser.add_argument('--augment_dir', action='store_true')
@@ -535,10 +599,14 @@ if __name__ == "__main__":
     # model params
     parser.add_argument('--mol_feat', type=str, default='W', choices=['fp', 'one_hot', 'ones', 'W', 'unimol'])
     parser.add_argument('--feat_concat_W', action='store_true')
+    parser.add_argument('--attn_W', action='store_true')
     parser.add_argument('--hidden_dim', type=int, default=16)
     parser.add_argument('--num_layers', type=int, default=5)
     parser.add_argument('--gnn', default='gin')
     parser.add_argument('--act', default='relu')
+    parser.add_argument('--share_params', action='store_false')
+    parser.add_argument('--in_mlp', action='store_true')
+    parser.add_argument('--dropout_rate', type=float, default=0.)
 
     # sampling params
     parser.add_argument('--num_generate_samples', type=int, default=100)
