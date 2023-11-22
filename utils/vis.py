@@ -3,7 +3,7 @@ import pickle
 import json
 import networkx as nx
 import os
-from graph import *
+from .graph import *
 
 import uuid
 from pathlib import Path

@@ -35,17 +35,16 @@ class DiffusionProcess:
         self.child_nums = [len(self.side_childs(a)) for a in self.main_chain[:-1]]
         self.total = np.prod([factorial(x) for x in self.child_nums])        
         self.split = split
-        self.dfs_dir = dfs_seed >= 0
-        dfs_seed = abs(dfs_seed)
-        self.dfs_seed = dfs_seed % self.total # 0 to X-1, where X := prod_(node in main chain) num_childs(node)
         self.reset()
         if not self.split:
+            self.dfs_dir = dfs_seed >= 0
+            dfs_seed = abs(dfs_seed)
+            self.dfs_seed = dfs_seed % self.total # 0 to X-1, where X := prod_(node in main chain) num_childs(node)            
             res = self.compute_dfs(dag)
             new_res = self.augment_walk_order(res, dfs_seed)
             self.dfs_order = new_res
             self.num_nodes = len(res)
-        else:
-            raise
+
 
 
     def augment_walk_order(self, res, dfs_seed):
@@ -383,14 +382,14 @@ def diffuse(graph, log_folder, **diff_args):
     # parameters = [W, scale]+list(context_layer.parameters())
     opt = torch.optim.Adam(model.parameters(), lr=diff_args['alpha'])
     history = []
-    T = 100
+    T = 20
     best_loss = float("inf")
     for i in range(diff_args['num_epochs']):
         graph.reset()
         context = torch.zeros((M, N), dtype=torch.float64)
         loss_func = nn.MSELoss()    
-        for t in range(T):
-            t_losses = []
+        t_losses = []
+        for t in range(T):            
             opt.zero_grad()     
             X = torch.as_tensor(graph.get_state(not diff_args['combine_walks'])) # (M, N)
             graph.step()
@@ -418,6 +417,7 @@ def diffuse(graph, log_folder, **diff_args):
         print(plot_file)
 
         if np.mean(t_losses) < best_loss:
+            print(f"E mean: {model.E.mean()}, std: {model.E.std()}")
             best_loss = np.mean(t_losses)
             torch.save(model.state_dict(), os.path.join(log_folder, 'ckpt.pt'))
     return model
@@ -671,13 +671,13 @@ def main(args):
     data_copy = deepcopy(data)
     dags = []        
     for k, v in data.items():
-        grps, root_node, conn = v    
-        root_node, leaf_node, e = conn[-1]
-        if root_node.id != 0:
-            breakpoint()
-        leaf_node.add_child((root_node, e)) # breaks dag
-        root_node.parent = (leaf_node, e)
-        root_node.dag_id = k
+        grps, root_node, conn = v            
+        if 'group-contrib' in args.motifs_folder:
+            root_node, leaf_node, e = conn[-1]
+            assert root_node.id == 0
+            leaf_node.add_child((root_node, e)) # breaks dag
+            root_node.parent = (leaf_node, e)
+            root_node.dag_id = k
         dags.append(root_node)
         
 

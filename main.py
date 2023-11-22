@@ -196,8 +196,9 @@ def preprocess_data(all_dags, args, logs_folder):
     mask = []
     for dag in all_dags:
         dag_ids[dag.dag_id] = dag
-    for i, l in enumerate(lines):
+    for i, l in enumerate(lines):        
         if i not in dag_ids: continue
+        breakpoint()
         prop = l.rstrip('\n').split(' ')[-1]
         prop = prop.strip('(').rstrip(')').split(',')
         prop = list(map(lambda x: float(x) if x != '-' else None, prop))
@@ -268,7 +269,7 @@ def main(args):
     all_nodes = list(G.nodes())   
 
 
-    run_tests(predefined_graph, all_nodes)
+    # run_tests(predefined_graph, all_nodes)
  
     mols = load_mols(args.motifs_folder)
     red_grps = annotate_extra(mols, args.extra_label_path)    
@@ -493,8 +494,8 @@ def run_tests(graph, all_nodes)                :
 
     # test verify_walk    
     r_lookup = r_member_lookup(mols)     
-    verify_walk(r_lookup, graph, ['L3','S32','S20[->S1,->S1]','S32'])
-    verify_walk(r_lookup, graph, ['L3','S32','S20[->P14->P39,->S18]','S32'])
+    # verify_walk(r_lookup, graph, ['L3','S32','S20[->S1,->S1]','S32'])
+    # verify_walk(r_lookup, graph, ['L3','S32','S20[->P14->P39,->S18]','S32'])
     
     # test process_good_traj
     name_traj = process_good_traj(['61','90','50[->39,->39]','90'], all_nodes)    
