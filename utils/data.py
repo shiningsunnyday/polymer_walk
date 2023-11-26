@@ -1,5 +1,6 @@
 import numpy as np 
 from rdkit.Chem import AllChem, DataStructs
+from sklearn.metrics import r2_score
 
 
 def pareto_or_not(prop_1, prop_2, num_pred, min_better=True):

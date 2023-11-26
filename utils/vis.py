@@ -3,6 +3,7 @@ import pickle
 import json
 import networkx as nx
 import os
+from .graph import *
 
 import uuid
 from pathlib import Path
@@ -205,11 +206,15 @@ def mermaid_write(mols, path, graph, props):
 def visualize_dag(args, dag_and_props, path):
     graph = nx.DiGraph()
     dag, *props = dag_and_props
-    for (i, edge) in enumerate(dag[:-2]):
-        if i % 2: continue        
+    added = set()
+    for (i, edge) in enumerate(dag):    
         a, b, name_a, name_b, e, _, w = edge
-        graph.add_node(a, name=name_a)
-        graph.add_node(b, name=name_b)
+        if a not in added:
+            graph.add_node(a, name=name_a)
+            added.add(a)
+        if b not in added:
+            graph.add_node(b, name=name_b)
+            added.add(b)
         graph.add_edge(a, b, e=e, w="{:.2f}".format(float(w)))
 
     mols = load_mols(args.motifs_folder)
@@ -228,6 +233,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     dags = json.load(open(args.dags_file, 'r'))
+    os.makedirs(args.out_path, exist_ok=True)
     for i, dag_and_props in enumerate(dags['old']):
         visualize_dag(args, dag_and_props, os.path.join(args.out_path, f"old_{i}.md"))
     for i, dag_and_props in enumerate(dags['novel']):
