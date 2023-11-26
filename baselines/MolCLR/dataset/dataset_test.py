@@ -184,6 +184,72 @@ class MolTestDataset(Dataset):
         return len(self.smiles_data)
 
 
+class MolFeatExtractDataset(Dataset):
+    def __init__(self, data_path, task):
+        super(Dataset, self).__init__()
+        import glob
+        self.all_data_path = glob.glob(data_path + '/*.mol')
+        self.all_mols = []
+        for f in self.all_data_path:
+            mol = Chem.rdmolfiles.MolFromMolFile(f)
+            if not mol:
+                mol = Chem.rdmolfiles.MolFromMolFile(f, sanitize=False)
+            assert mol
+            idx = int(os.path.basename(f).split('.')[0])
+            self.all_mols.append((idx, mol))
+            
+        self.task = task
+
+    def __getitem__(self, index):
+        data_name_idx, mol = self.all_mols[index]
+            
+        N = mol.GetNumAtoms()
+        M = mol.GetNumBonds()
+
+        type_idx = []
+        chirality_idx = []
+        atomic_number = []
+        for atom in mol.GetAtoms():
+            try:
+                type_idx.append(ATOM_LIST.index(atom.GetAtomicNum()))
+                chirality_idx.append(CHIRALITY_LIST.index(atom.GetChiralTag()))
+                atomic_number.append(atom.GetAtomicNum())
+            except:
+                import pdb; pdb.set_trace()
+
+        x1 = torch.tensor(type_idx, dtype=torch.long).view(-1,1)
+        x2 = torch.tensor(chirality_idx, dtype=torch.long).view(-1,1)
+        x = torch.cat([x1, x2], dim=-1)
+
+        row, col, edge_feat = [], [], []
+        for bond in mol.GetBonds():
+            start, end = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+            row += [start, end]
+            col += [end, start]
+            bond_type_feat = BOND_LIST.index(bond.GetBondType())
+            try:
+                bond_dir_feat = BONDDIR_LIST.index(bond.GetBondDir())
+            except:
+                bond_dir_feat = 0
+                
+            edge_feat.append([
+                bond_type_feat,
+                bond_dir_feat
+            ])
+            edge_feat.append([
+                bond_type_feat,
+                bond_dir_feat
+            ])
+
+        edge_index = torch.tensor([row, col], dtype=torch.long)
+        edge_attr = torch.tensor(np.array(edge_feat), dtype=torch.long)
+        data = Data(x=x, y=None, edge_index=edge_index, edge_attr=edge_attr, data_name_idx=data_name_idx)
+        return data
+
+    def __len__(self):
+        return len(self.all_mols)
+    
+    
 class MolTestDatasetWrapper(object):
     
     def __init__(self, 
