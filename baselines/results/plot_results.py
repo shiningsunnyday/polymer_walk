@@ -1,8 +1,9 @@
 import json
 import glob
 
+methods = ["MolCLR_pretrained_gcn", "MolCLR_pretrained_gin", "unimol"]
 datasets = ["Permeability", "group_ctb"]
-methods = ["MolCLR_pretrained_gcn", "MolCLR_pretrained_gin"] #, "unimol"]
+# datasets = ["group_ctb_O2_N2", "group_ctb_CO2_CH4"]
 
 all_results = glob.glob("./*json")
 

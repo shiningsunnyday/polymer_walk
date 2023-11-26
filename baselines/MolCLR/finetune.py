@@ -70,7 +70,7 @@ class FineTune(object):
         if config['dataset']['task'] == 'classification':
             self.criterion = nn.CrossEntropyLoss()
         elif config['dataset']['task'] == 'regression':
-            if self.config["task_name"] in ['qm7', 'qm8', 'qm9', 'Permeability', 'group_ctb']:
+            if self.config["task_name"] in ['qm7', 'qm8', 'qm9', 'Permeability', 'group_ctb'] or 'group_ctb' in self.config["task_name"]:
                 self.criterion = nn.L1Loss()
             else:
                 self.criterion = nn.MSELoss()
@@ -103,7 +103,7 @@ class FineTune(object):
         train_loader, valid_loader, test_loader = self.dataset.get_data_loaders()
 
         self.normalizer = None
-        if self.config["task_name"] in ['qm7', 'qm9', 'Permeability', 'group_ctb']:
+        if self.config["task_name"] in ['qm7', 'qm9', 'Permeability', 'group_ctb'] or 'group_ctb' in self.config["task_name"]:
             labels = []
             # for d, __ in train_loader:
             for d in train_loader:
@@ -243,7 +243,7 @@ class FineTune(object):
         if self.config['dataset']['task'] == 'regression':
             predictions = np.array(predictions)
             labels = np.array(labels)
-            if self.config['task_name'] in ['qm7', 'qm8', 'qm9', 'Permeability', 'group_ctb']:
+            if self.config['task_name'] in ['qm7', 'qm8', 'qm9', 'Permeability', 'group_ctb'] or 'group_ctb' in self.config["task_name"]:
                 mae = mean_absolute_error(labels, predictions)
                 print('Validation loss:', valid_loss, 'MAE:', mae)
                 return valid_loss, mae
@@ -302,7 +302,7 @@ class FineTune(object):
         if self.config['dataset']['task'] == 'regression':
             predictions = np.array(predictions)
             labels = np.array(labels)
-            if self.config['task_name'] in ['qm7', 'qm8', 'qm9', 'Permeability', 'group_ctb']:
+            if self.config['task_name'] in ['qm7', 'qm8', 'qm9', 'Permeability', 'group_ctb'] or 'group_ctb' in self.config["task_name"]:
                 self.mae = mean_absolute_error(labels, predictions)
                 self.r2 = r2_score(labels, predictions)
                 self.rmse = mean_squared_error(labels, predictions, squared=False)
@@ -327,10 +327,10 @@ def main(config):
     if config['dataset']['task'] == 'classification':
         return fine_tune.roc_auc
     if config['dataset']['task'] == 'regression':
-        if config['task_name'] in ['qm7', 'qm8', 'qm9', 'Permeability', 'group_ctb']:
-            return (fine_tune.mae, fine_tune.r2, fine_tune.rmse)
-        else:
-            return fine_tune.rmse
+        # if config['task_name'] in ['qm7', 'qm8', 'qm9', 'Permeability', 'group_ctb']:
+        return (fine_tune.mae, fine_tune.r2, fine_tune.rmse)
+        # else:
+        #     return fine_tune.rmse
 
 
 if __name__ == "__main__":
@@ -437,6 +437,16 @@ if __name__ == "__main__":
         config['dataset']['task'] = 'regression'
         config['dataset']['data_path'] = '/research/cbim/vast/zz500/Projects/mhg/ICML2024/polymer_walk/datasets/group_ctb.csv'
         target_list = ["permeability_H2", "selectivity_H2_N2"]
+        
+    elif config["task_name"] == 'group_ctb_CO2_CH4':
+        config['dataset']['task'] = 'regression'
+        config['dataset']['data_path'] = '/research/cbim/vast/zz500/Projects/mhg/ICML2024/polymer_walk/datasets/smiles_and_props_old_CO2_CH4.csv'
+        target_list = ["permeability_CO2", "selectivity_CO2_CH4"]
+        
+    elif config["task_name"] == 'group_ctb_O2_N2':
+        config['dataset']['task'] = 'regression'
+        config['dataset']['data_path'] = '/research/cbim/vast/zz500/Projects/mhg/ICML2024/polymer_walk/datasets/smiles_and_props_old_O2_N2.csv'
+        target_list = ["permeability_O2", "selectivity_O2_N2"]
 
     else:
         raise ValueError('Undefined downstream task!')
