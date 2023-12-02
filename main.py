@@ -13,11 +13,11 @@ from copy import deepcopy
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import r2_score
 import pandas as pd
+from tqdm import tqdm
 
 def walk_edge_weight(dag, graph, model, proc):
     N = len(graph.graph)
     walk_order = []
-    assert not proc.split
     walk_order = proc.dfs_order
     context = torch.zeros((1, N), dtype=torch.float64)
     start_node_ind = graph.index_lookup[walk_order[0].val]
@@ -44,7 +44,37 @@ def walk_edge_weight(dag, graph, model, proc):
     return W_adj 
 
 
-def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats):
+def featurize_walk(graph, model, dag, proc, mol_feats, feat_lookup={}):
+    """
+    graph: DiffusionGraph
+    model: L_grammar
+    dag: Node
+    proc: DiffusionProcess
+    mol_feats: (len(graph.graph), dim) features of groups on graph.graph
+    feat_lookup: features of isolated groups not on graph.graph
+    """
+    if dag.children:
+        try:
+            W_adj = walk_edge_weight(dag, graph, model, proc)
+        except:
+            breakpoint()
+        # GNN with edge weight
+        return W_to_attr(args, W_adj, mol_feats)
+    else:
+        assert feat_lookup, "need features for isolated groups"
+        assert dag.val not in graph.graph
+        assert len(proc.dfs_order) == 1
+        N = len(graph.graph)
+        W_adj = torch.zeros((N, N), dtype=torch.float32)
+        mol_isolated_feats = feat_lookup[dag.val][None].repeat((N,1))
+        node_attr, edge_index, edge_attr = W_to_attr(args, W_adj, mol_isolated_feats)
+        assert edge_index.shape[1] == 0
+        edge_index = torch.tensor([[0], [0]], dtype=torch.int64) # trivial self-connection for gnn
+        return node_attr, edge_index, edge_attr
+        
+
+
+def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats, feat_lookup={}):
     dags_copy = deepcopy(dags)
     if args.test_size:
         dags_copy_train, dags_copy_test, norm_props_train, norm_props_test, props_train, props_test, train_inds, test_inds = train_test_split(dags_copy, norm_props, props, list(range(len(dags_copy))), test_size=args.test_size, random_state=42)
@@ -72,7 +102,7 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats):
 
     G = graph.graph  
     N = len(G)    
-
+    diffusion_args['adj_matrix'] = nx.adjacency_matrix(G).toarray()
     if diffusion_args['e_init']:
         diffusion_args['init_e'] = nx.adjacency_matrix(G).toarray()    
     model = L_grammar(len(G), diffusion_args)
@@ -88,7 +118,7 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats):
     predictor = Predictor(input_dim=args.input_dim, 
                           hidden_dim=args.hidden_dim, 
                           num_layers=args.num_layers, 
-                          num_heads=2, 
+                          num_heads=len(norm_props[0]), 
                           gnn=args.gnn, 
                           act=args.act, 
                           share_params=args.share_params,
@@ -99,6 +129,8 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats):
         predictor.load_state_dict(state, strict=True)
         for p in predictor.parameters():
             p.requires_grad_(False)
+    if args.cuda > -1:
+        predictor.to(f"cuda:{args.cuda}")
     if args.update_grammar:
         all_params = list(model.parameters()) + list(predictor.parameters())
         if args.predictor_ckpt:
@@ -106,7 +138,7 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats):
     else:
         all_params = list(predictor.parameters())
     if args.opt == 'sgd':
-        opt = torch.optim.SGD(all_params, lr=1e-4)         
+        opt = torch.optim.SGD(all_params, lr=args.lr, momentum=args.momentum)
     elif args.opt == 'adam':
         opt = torch.optim.Adam(all_params)
     else:
@@ -118,11 +150,15 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats):
     best_loss = float("inf")
     print(args.logs_folder)
     mean_and_std = np.loadtxt(os.path.join(args.logs_folder,'mean_and_std.txt'))
+    mean_and_std = np.atleast_2d(mean_and_std)
     mean = mean_and_std[:,0]
     std = mean_and_std[:,1]        
 
-    best_maes = [float("inf"), float("inf")]
-    best_epochs = [0, 0]
+    best_maes = [float("inf") for _ in args.property_cols]
+    best_epochs = [0 for _ in args.property_cols]
+
+    train_feat_cache = {}
+    test_feat_cache = {}
     for epoch in range(args.num_epochs):        
         # compute edge control weighted adj matrix via model inference    
         predictor.train()
@@ -132,42 +168,72 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats):
         train_order = list(range(len(dags_copy_train)))
         if args.shuffle:
             random.shuffle(train_order)
-        for i in range(len(dags_copy_train)):            
+        
+        times = []        
+        for i in tqdm(range(len(dags_copy_train))):
+            start_time = time.time()
             ind = train_order[i]
             procs = all_procs[ind]
             if i % args.num_accumulation_steps == 1 % args.num_accumulation_steps: 
                 opt.zero_grad()         
             for proc in procs:
-                W_adj = walk_edge_weight(dags_copy_train[ind], graph, model, proc)
-                # GNN with edge weight
-                node_attr, edge_index, edge_attr = W_to_attr(args, W_adj, mol_feats)            
-                X = node_attr
-                prop = do_predict(predictor, X, edge_index, edge_attr)                                          
-                loss = loss_func(prop, norm_props_train[ind])            
+                start_feat_time = time.time()
+                if args.update_grammar:
+                    node_attr, edge_index, edge_attr = featurize_walk(graph, model, dags_copy_train[ind], proc, mol_feats, feat_lookup)
+                else:
+                    assert not args.shuffle
+                    if ind not in train_feat_cache:
+                        node_attr, edge_index, edge_attr = featurize_walk(graph, model, dags_copy_train[ind], proc, mol_feats, feat_lookup)
+                        node_attr, edge_index, edge_attr = node_attr.detach(), edge_index.detach(), edge_attr.detach()
+                        train_feat_cache[ind] = (node_attr, edge_index, edge_attr)                      
+                    node_attr, edge_index, edge_attr = train_feat_cache[ind]
+                    node_attr, edge_index, edge_attr = node_attr.clone(), edge_index.clone(), edge_attr.clone().detach()
+                    assert node_attr.requires_grad == False
+                
+                X = node_attr        
+                start_pred_time = time.time()                
+                prop = do_predict(predictor, X, edge_index, edge_attr, cuda=args.cuda)                                          
+                loss = loss_func(prop, norm_props_train[ind])
                 train_loss_history.append(loss.item())     
+                loss_backward_time = time.time()
                 loss.backward()
+                if not (loss == loss).all():
+                    breakpoint()        
             if args.augment_dfs:
                 assert args.num_accumulation_steps == 1
                 for p in all_params:
                     if p.requires_grad:
                         p.grad /= len(procs)
+            opt_step_time = time.time()
             if i == len(dags_copy_train)-1 or i % args.num_accumulation_steps == 0:                 
                 opt.step()
+            final_time = time.time()
+            times.append([start_feat_time-start_time, start_pred_time-start_feat_time, loss_backward_time-start_pred_time, opt_step_time-loss_backward_time, final_time-opt_step_time])
+        
+        for time_type, time_took in zip(['zero grad', 'feat', 'pred', 'backward', 'step'], np.array(times).mean(axis=0).tolist()):
+            print(f"{time_type} took {time_took}")
+
 
         graph.reset()
         test_preds = []
         loss_history = []
         predictor.eval()
         with torch.no_grad():
-            for i in range(len(dags_copy_test)):                        
-                W_adj = walk_edge_weight(dags_copy_test[i], graph, model, graph.lookup_process(dags_copy_test[i].dag_id))
-                # GNN with edge weight
-                node_attr, edge_index, edge_attr = W_to_attr(args, W_adj, mol_feats)            
+            for i in tqdm(range(len(dags_copy_test))):     
+                if args.update_grammar:
+                    node_attr, edge_index, edge_attr = featurize_walk(graph, model, dags_copy_test[i], graph.lookup_process(dags_copy_test[i].dag_id), mol_feats, feat_lookup)
+                else:
+                    if i in test_feat_cache:
+                        node_attr, edge_index, edge_attr = test_feat_cache[i]
+                        assert node_attr.requires_grad == False
+                    else:
+                        node_attr, edge_index, edge_attr = featurize_walk(graph, model, dags_copy_test[i], graph.lookup_process(dags_copy_test[i].dag_id), mol_feats, feat_lookup)
+                        test_feat_cache[i] = (node_attr, edge_index, edge_attr)                
                 X = node_attr
-                prop = do_predict(predictor, X, edge_index, edge_attr)                          
+                prop = do_predict(predictor, X, edge_index, edge_attr, cuda=args.cuda)                          
                 loss = loss_func(prop, norm_props_test[i])            
                 loss_history.append(loss.item())
-                test_preds.append((prop*std+mean).numpy())
+                test_preds.append((prop.cpu()*std+mean).numpy())
 
 
 
@@ -182,10 +248,20 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats):
         train_history.append(np.mean(train_loss_history))        
         y_hat = np.array(test_preds)
         y = np.array(props_test)
-        col_names = ['H2','N2','O2','CH4','CO2']
-        i1, i2 = args.property_cols
-        metric_names = [f'permeability_{col_names[i1]}', f'selectivity_{col_names[i1]}_{col_names[i2]}']
+
+        if 'group-contrib' in args.walks_file:
+            col_names = ['H2','N2','O2','CH4','CO2']
+            i1, i2 = args.property_cols
+            metric_names = [f'permeability_{col_names[i1]}', f'selectivity_{col_names[i1]}_{col_names[i2]}']
+        elif 'permeability' in args.walks_file:
+            col_names = ['log10_He_Bayesian','log10_H2_Bayesian','log10_O2_Bayesian','log10_N2_Bayesian','log10_CO2_Bayesian','log10_CH4_Bayesian']            
+            metric_names = [col_names[j] for j in args.property_cols]
+
         metric = {}
+        if not (y == y).all():
+            breakpoint()
+        if not (y_hat == y_hat).all():
+            breakpoint()
         for i in range(len(mean)):
             r2 = r2_score(y[:,i], y_hat[:,i])
             mae = np.abs(y_hat[:,i]-y[:,i]).mean()
@@ -246,19 +322,32 @@ def preprocess_data(all_dags, args, logs_folder):
         dag_ids[dag.dag_id] = dag
     for i, l in enumerate(lines):        
         if i not in dag_ids: continue
-        breakpoint()
-        prop = l.rstrip('\n').split(' ')[-1]
-        prop = prop.strip('(').rstrip(')').split(',')
-        try:
-            prop = list(map(lambda x: float(x) if x not in ['-','_'] else None, prop))
-        except:
-            print(l)
+        if 'group-contrib' in args.walks_file:
+            prop = l.rstrip('\n').split(' ')[-1]
+            prop = prop.strip('(').rstrip(')').split(',')
+        elif 'permeability' in args.walks_file:
+            prop = l.rstrip('\n').split(',')[1:]
+        else:
+            raise
      
-        i1, i2 = args.property_cols
-        if prop[i1] and prop[i2]:
-            mask.append(i)
-            props.append([prop[i1],prop[i1]/prop[i2]])
-            dags.append(dag_ids[i])
+        if args.property_cols:
+            if 'group-contrib' in args.walks_file:
+                try:
+                    prop = list(map(lambda x: float(x) if x not in ['-','_'] else None, prop))
+                except:
+                    print(l)                
+                i1, i2 = args.property_cols
+                if prop[i1] and prop[i2]:
+                    mask.append(i)
+                    props.append([prop[i1],prop[i1]/prop[i2]])
+                    dags.append(dag_ids[i])
+            elif 'permeability' in args.walks_file:
+                prop = list(map(float, prop))
+                mask.append(i)
+                props.append([prop[j] for j in args.property_cols])
+                dags.append(dag_ids[i])
+            else:
+                breakpoint()
     
     props = np.array(props)
     mean, std = np.mean(props,axis=0,keepdims=True), np.std(props,axis=0,keepdims=True)    
@@ -266,11 +355,15 @@ def preprocess_data(all_dags, args, logs_folder):
         for i in range(props.shape[-1]):                
             f.write(f"{mean[0,i]} {std[0,i]}\n")
     
-    norm_props = torch.FloatTensor((props-mean)/std)  
+    norm_props = torch.FloatTensor((props-mean)/std)
+    if args.cuda > -1:
+        norm_props = norm_props.to(f"cuda:{args.cuda}")
     return props, norm_props, dags, mask
 
 
-def do_predict(predictor, X, edge_index, edge_attr):
+def do_predict(predictor, X, edge_index, edge_attr, cuda=-1):    
+    if cuda > -1:
+        X, edge_index, edge_attr = X.to(f"cuda:{cuda}"), edge_index.to(f"cuda:{cuda}"), edge_attr.to(f"cuda:{cuda}")
     # try modifying X based on edge_attr
     return predictor(X, edge_index, edge_attr)    
 
@@ -307,8 +400,9 @@ def main(args):
         # assert root_node.id == 0
         # leaf_node.add_child((root_node, e)) # breaks dag
         # root_node.parent = (leaf_node, e)
-        root_node.dag_id = k
-        dags.append(root_node)
+        if root_node.children:
+          root_node.dag_id = k
+          dags.append(root_node)
 
     config_json = json.loads(json.load(open(os.path.join(args.grammar_folder,'config.json'),'r')))
     diffusion_args = {k[len('diffusion_'):]: v for (k, v) in config_json.items() if 'diffusion' in k}
@@ -329,8 +423,12 @@ def main(args):
 
     if args.mol_feat == 'fp':
         feat_lookup = {}
-        for i in range(1,98):
-            feat_lookup[name_group(i)] = mol2fp(mols[i-1])[0]
+        if 'group-contrib' in args.walks_file:
+            for i in range(1,98):
+                feat_lookup[name_group(i)] = mol2fp(mols[i-1])[0]
+        elif 'permeability' in args.walks_file:
+            for i in range(1,len(mols)+1):
+                feat_lookup[name_group(i)] = mol2fp(mols[i-1])[0]            
         mol_feats = np.zeros((len(G), 2048), dtype=np.float32)
         for n in G.nodes():
             ind = graph.index_lookup[n]
@@ -342,6 +440,7 @@ def main(args):
     elif args.mol_feat == 'W':
         mol_feats = torch.zeros((len(G), len(G)))
     elif args.mol_feat == 'unimol':
+        assert 'group-contrib' in args.walks_file
         unimol_feats = torch.load('data/group_reprs.pt')
         for i, unimol_feat in enumerate(unimol_feats):
             unimol_feats[i] = unimol_feat.mean(axis=0)
@@ -352,7 +451,20 @@ def main(args):
         mol_feats = np.zeros((len(G), 512), dtype=np.float32)
         for n in G.nodes():
             ind = graph.index_lookup[n]
-            mol_feats[ind] = feat_lookup[n.split(':')[0]]            
+            mol_feats[ind] = feat_lookup[n.split(':')[0]]
+    elif os.path.isdir(args.mol_feat_dir):
+        sorted_files = sorted(os.listdir(args.mol_feat_dir), key=lambda x: int(Path(x).stem))
+        files = [f for f in sorted_files if f.endswith('.npy')]
+        feats = [np.load(os.path.join(args.mol_feat_dir, f)) for f in files]
+        feats = np.stack(feats)
+        feats = torch.from_numpy(feats)
+        feat_lookup = {}
+        for i in range(1,len(mols)+1):
+            feat_lookup[name_group(i)] = feats[i-1]
+        mol_feats = np.zeros((len(G), feats.shape[-1]), dtype=np.float32)
+        for n in G.nodes():
+            ind = graph.index_lookup[n]
+            mol_feats[ind] = feat_lookup[n.split(':')[0]]
     else:
         raise
 
@@ -368,7 +480,7 @@ def main(args):
         model.load_state_dict(state)
         assert os.path.exists(os.path.join(args.logs_folder, 'config.json'))
         config = json.loads(json.load(open(os.path.join(args.logs_folder, 'config.json'))))
-        predictor = Predictor(num_heads=2, **config)
+        predictor = Predictor(num_heads=len(args.property_cols), **config)
         state = torch.load(os.path.join(args.predictor_file))
         predictor.load_state_dict(state)  
         model.eval()
@@ -382,7 +494,7 @@ def main(args):
             json.dump(json.dumps(args.__dict__), f)  
 
         props, norm_props, dags, mask = preprocess_data(dags, args, args.logs_folder)            
-        model, predictor = train(args, dags, graph, diffusion_args, props, norm_props, mol_feats)
+        model, predictor = train(args, dags, graph, diffusion_args, props, norm_props, mol_feats, feat_lookup)
        
     graph.reset()
     trajs = []
@@ -414,10 +526,9 @@ def main(args):
                         print(name_traj, "novel")
                         walks.add(name_traj)                        
                         proc = DiffusionProcess(root, graph.index_lookup, **diffusion_args)
-                        W_adj = walk_edge_weight(root, graph, model, proc)
-                        node_attr, edge_index, edge_attr = W_to_attr(args, W_adj, mol_feats)
+                        node_attr, edge_index, edge_attr = featurize_walk(graph, model, root, proc, mol_feats, feat_lookup)
                         X = node_attr
-                        prop = do_predict(predictor, X, edge_index, edge_attr)
+                        prop = do_predict(predictor, X, edge_index, edge_attr, cuda=args.cuda)
                         print("predicted prop", prop)
                         probs = [W_adj[int(traj[i])][int(traj[(i+1)%len(traj)])] for i in range(len(traj))]
                         novel.append((name_traj, root, edge_conn, W_adj, prop.detach().numpy()))
@@ -435,10 +546,9 @@ def main(args):
     all_walks['old'] = []
     for i, dag in enumerate(dags):
         proc = graph.lookup_process(dag.dag_id)
-        W_adj = walk_edge_weight(dag, graph, model, proc)
-        node_attr, edge_index, edge_attr = W_to_attr(args, W_adj, mol_feats)
+        node_attr, edge_index, edge_attr = featurize_walk(graph, model, dag, proc, mol_feats, feat_lookup)
         X = node_attr
-        prop = do_predict(predictor, X, edge_index, edge_attr)           
+        prop = do_predict(predictor, X, edge_index, edge_attr, cuda=args.cuda)           
         loss_history.append(nn.MSELoss()(prop, norm_props[i]).item())
         prop_npy = prop.detach().numpy()
         orig_preds.append(prop_npy)
@@ -451,6 +561,7 @@ def main(args):
         if not conn:
             breakpoint()
         conn = data[dag.dag_id][-1][:-1]
+        W_adj = walk_edge_weight(dag, graph, model, proc)
         all_walks['old'].append((conn, W_adj, props[i]))
 
     print(np.mean(loss_history))
@@ -577,6 +688,7 @@ if __name__ == "__main__":
     parser.add_argument('--predictor_file', help='if provided, sample new')
     parser.add_argument('--predictor_ckpt')
     parser.add_argument('--update_grammar', action='store_true')
+    parser.add_argument('--cuda', default=-1, type=int)
 
     # data params
     parser.add_argument('--predefined_graph_file')    
@@ -592,12 +704,14 @@ if __name__ == "__main__":
     # training params
     parser.add_argument('--num_epochs', type=int)
     parser.add_argument('--lr', type=float, default=1e-3)
+    parser.add_argument('--momentum', type=float, default=0.0)
     parser.add_argument('--num_accumulation_steps', type=int, default=1)
     parser.add_argument('--opt', default='adam')
     parser.add_argument('--shuffle', action='store_true')
 
     # model params
-    parser.add_argument('--mol_feat', type=str, default='W', choices=['fp', 'one_hot', 'ones', 'W', 'unimol'])
+    parser.add_argument('--mol_feat', type=str, default='W', choices=['fp', 'one_hot', 'ones', 'W', 'unimol', 'dir'])
+    parser.add_argument('--mol_feat_dir', type=str)
     parser.add_argument('--feat_concat_W', action='store_true')
     parser.add_argument('--attn_W', action='store_true')
     parser.add_argument('--hidden_dim', type=int, default=16)

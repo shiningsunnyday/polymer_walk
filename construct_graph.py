@@ -85,23 +85,21 @@ if __name__ == "__main__":
     else: # other dataset
         lines = sorted(os.listdir(args.data_file), key=lambda f: int(''.join(list(filter(lambda x: x.isdigit(), f)))))
         for f in lines:
-            G = nx.read_edgelist(os.path.join(args.data_file, f), create_using=nx.MultiDiGraph)
-            if not G.nodes():
-                print(f"{f} no nodes")
-                continue
-            if max(len(cyc) for cyc in nx.simple_cycles(G)) > 2: # length > 2 is problem
+            G = nx.read_edgelist(os.path.join(args.data_file, f), create_using=nx.MultiDiGraph)      
+            if G.nodes() and max(len(cyc) for cyc in nx.simple_cycles(G)) > 2: # length > 2 is problem
                 print(f"{f} has cycle")
-                continue
             try:
-                root, conn = bfs_traverse(G, graph)         
+                root, conn = bfs_traverse(G, graph)
             except (KeyError, RuntimeError) as e:
+                breakpoint()
+                root, conn = bfs_traverse(G, graph)
                 if type(e) == KeyError:
                     print(e)
                 else:
                     breakpoint()
                 continue
             if root.id:
-                breakpoint()
+                breakpoint()   
             dags[int(f.split('walk_')[-1].split('.')[0])] = (None, root, conn)
             roots.append(root)
             conns.append(conn)

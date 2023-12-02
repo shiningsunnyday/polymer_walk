@@ -36,7 +36,13 @@ class DiffusionProcess:
         self.total = np.prod([factorial(x) for x in self.child_nums])        
         self.split = split
         self.reset()
-        if not self.split:
+
+        if self.split:
+            res = []
+            self.dfs_walk(dag, res)
+            self.dfs_order = res
+            self.num_nodes = len(res)
+        else:
             self.dfs_dir = dfs_seed >= 0
             dfs_seed = abs(dfs_seed)
             self.dfs_seed = dfs_seed % self.total # 0 to X-1, where X := prod_(node in main chain) num_childs(node)            
@@ -140,8 +146,9 @@ class DiffusionProcess:
     def reset(self):
         self.t = 0
         self.state = np.array([0.0 for _ in self.lookup])
-        self.state[self.lookup[self.dag.val]] = 1.0
-        self.frontier = {self.dag: 1}
+        if self.dag.val in self.lookup:
+            self.state[self.lookup[self.dag.val]] = 1.0
+            self.frontier = {self.dag: 1}       
 
 
     def step(self):
@@ -187,7 +194,10 @@ class DiffusionGraph:
         self.diffusion_args = diffusion_args
         self.t = 0        
         self.processes = []
-        self.index_lookup = self.modify_graph(dags, graph)
+
+        # account for all non-single-node dags
+        self.index_lookup = self.modify_graph(dags, graph)        
+
         for dag in dags:
             if dag.id:
                 breakpoint()
@@ -213,7 +223,10 @@ class DiffusionGraph:
                 breakpoint()
             for k, v in value_counts.items():
                 max_value_count[k] = max(max_value_count.get(k, 0), v)
-        
+            
+        """
+        Add nodes of the form GX:1, GX:2, ... representing re-visits to group X in the same walk
+        """
         for k, count in max_value_count.items():
             if count == 1: continue
             for i in range(count):
@@ -269,10 +282,10 @@ class L_grammar(nn.Module):
         if diff_args['e_init']:
             E = torch.as_tensor(diff_args['init_e'], dtype=torch.float64)
         else:
-            E = torch.zeros((N, N), dtype=torch.float64)    
+            E = torch.rand((N, N), dtype=torch.float64)
+        self.A = torch.as_tensor(diff_args['adj_matrix'], dtype=torch.float64)
         self.E = nn.Parameter(E)
-        self.scale = nn.Parameter(torch.ones((1,), dtype=torch.float64))
-        self.A = torch.as_tensor(E.clone().detach(), dtype=torch.float64)
+        self.scale = nn.Parameter(torch.ones((self.A.shape[0],), dtype=torch.float64))        
         self.context_layer = nn.Linear(N, N*N, dtype=torch.float64)
         nn.init.zeros_(self.context_layer.weight)
         nn.init.zeros_(self.context_layer.bias)
@@ -287,11 +300,17 @@ class L_grammar(nn.Module):
                 W_new = adjust + self.E # (M, N, N)
             else:
                 W_new = self.E
-            L = torch.diag_embed(torch.matmul(W_new,self.A[None]).sum(axis=-2))-W_new # (M, N, N)
+            # W_new is (M, N, N)
+            # self.A[None] is (1, N, N)
+            W_hat = torch.matmul(W_new,self.A[None]) # (M, N, N)
+            W_hat = W_hat.sum(axis=-2) # (M, N)
+            W_hat_diag = torch.diag_embed(W_hat) # (M, N, N)
+            L = W_hat_diag-W_new # (M, N, N)
+            L = L/L.sum(axis=-1, keepdim=True)
         
-        context = context*t/(t+1) + X/(t+1)              
-        L_T = self.scale * torch.transpose(L, -1,-2)
-        update = torch.matmul(X[...,None,:],L_T).squeeze()
+        context = context*t/(t+1) + X/(t+1)        
+        L_T = self.scale[None,...,None] * torch.transpose(L, -1,-2)
+        update = torch.matmul(X[...,None,:],L_T).squeeze() # sum to 0
         return update, context
     
 
@@ -422,7 +441,10 @@ class Predictor(nn.Module):
 
 def state_to_probs(state):
     state = torch.where(state>=0., state, 0.0)
-    return state/state.sum(axis=-1)
+    if state.sum(axis=-1):
+        return state/state.sum(axis=-1)
+    else:
+        return state
     state = state - state.min(-1, True).values
     return state/state.sum(axis=-1)
 
@@ -432,6 +454,7 @@ def diffuse(graph, log_folder, **diff_args):
     G = graph.graph
     print(f"state at 0: {graph.get_state()}")    
     N, M = len(G), 1 if diff_args['combine_walks'] else len(graph.processes)
+    diff_args['adj_matrix'] = nx.adjacency_matrix(G).toarray()
     if diff_args['e_init']:
         diff_args['init_e'] = nx.adjacency_matrix(G).toarray()
     model = L_grammar(N, diff_args)
@@ -447,7 +470,12 @@ def diffuse(graph, log_folder, **diff_args):
     # nn.init.zeros_(context_layer.bias)
     # loss_func = nn.MSELoss()   
     # parameters = [W, scale]+list(context_layer.parameters())
-    opt = torch.optim.Adam(model.parameters(), lr=diff_args['alpha'])
+    if diff_args['opt'] == 'adam':
+        opt = torch.optim.Adam(model.parameters(), lr=diff_args['alpha'])
+    elif diff_args['opt'] == 'sgd':
+        opt = torch.optim.Adam(model.parameters(), lr=diff_args['alpha'])
+    else:
+        raise
     history = []
     T = 20
     best_loss = float("inf")
@@ -725,7 +753,6 @@ def sample_walks(G, graph, walks, model, all_nodes, r_lookup, predefined_graph):
 def main(args):
     walks = load_walks(args)
     diffusion_args = {k[len('diffusion_'):]: v for (k, v) in args.__dict__.items() if 'diffusion' in k}
-
     graph = nx.read_edgelist(args.predefined_graph_file, create_using=nx.MultiDiGraph)
     predefined_graph = nx.read_edgelist(args.predefined_graph_file, create_using=nx.MultiDiGraph)
     mols = load_mols(args.motifs_folder)
@@ -745,7 +772,8 @@ def main(args):
             leaf_node.add_child((root_node, e)) # breaks dag
             root_node.parent = (leaf_node, e)
             root_node.dag_id = k
-        dags.append(root_node)
+        if root_node.children: # don't diffuse single-group dags
+            dags.append(root_node)
         
 
     graph = DiffusionGraph(dags, graph, **diffusion_args) 
@@ -810,6 +838,7 @@ if __name__ == "__main__":
     parser.add_argument('--e_init', dest='diffusion_e_init', action='store_true')
     parser.add_argument('--context_L', dest='diffusion_context_L', action='store_true')
     parser.add_argument('--alpha', dest='diffusion_alpha', default=1e-4, type=float)
+    parser.add_argument('--opt', dest='diffusion_opt', default='adam')
     parser.add_argument('--num_epochs', dest='diffusion_num_epochs', default=500, type=int)
 
     args = parser.parse_args()
