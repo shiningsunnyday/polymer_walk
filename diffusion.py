@@ -349,8 +349,11 @@ class Predictor(nn.Module):
                     continue
                 lin_out_1 = nn.Linear(input_dim, hidden_dim)
                 lin_out_2 = nn.Linear(hidden_dim, hidden_dim)
-                dropout = nn.Dropout(self.dropout_rate)
-                mlp_in = nn.Sequential(lin_out_1, act, dropout, lin_out_2)
+                if self.dropout_rate:
+                    dropout = nn.Dropout(self.dropout_rate)
+                    mlp_in = nn.Sequential(lin_out_1, act, dropout, lin_out_2)
+                else:
+                    mlp_in = nn.Sequential(lin_out_1, act, lin_out_2)
                 # nn.init.zeros_(lin_out.weight)
                 # nn.init.zeros_(lin_out.bias)
                 layer_name = f"in_mlp" if share_params else f"in_mlp_{i}"
@@ -366,14 +369,17 @@ class Predictor(nn.Module):
                         if i > 1: 
                             input_dim = hidden_dim     
                         lin_i_1 = nn.Linear(input_dim, hidden_dim)
-                        lin_i_2 = nn.Linear(hidden_dim, hidden_dim)
-                        dropout = nn.Dropout(self.dropout_rate)
+                        lin_i_2 = nn.Linear(hidden_dim, hidden_dim)                        
                         # nn.init.zeros_(lin_i_1.weight)
                         # nn.init.zeros_(lin_i_2.weight)
                         # nn.init.zeros_(lin_i_1.bias)
                         # nn.init.zeros_(lin_i_2.bias)                                    
                         # setattr(self, f"gnn_{i}", GATConv(in_channels=-1, out_channels=hidden_dim, edge_dim=1))
-                        mlp = nn.Sequential(lin_i_1, act, dropout, lin_i_2)
+                        if self.dropout_rate:
+                            dropout = nn.Dropout(self.dropout_rate)
+                            mlp = nn.Sequential(lin_i_1, act, dropout, lin_i_2)
+                        else: 
+                            mlp = nn.Sequential(lin_i_1, act, lin_i_2)
                         layer_name = f"gnn_{i}" if share_params else f"gnn_{i}_{j}"
                         setattr(self, layer_name, GINConv(mlp, edge_dim=1))               
         elif gnn in ['gat', 'gcn']:
@@ -388,10 +394,13 @@ class Predictor(nn.Module):
                       
 
         for i in range(1, num_heads+1):
-            lin_out_1 = nn.Linear(hidden_dim, hidden_dim)
-            dropout = nn.Dropout(self.dropout_rate)
+            lin_out_1 = nn.Linear(hidden_dim, hidden_dim)            
             lin_out_2 = nn.Linear(hidden_dim, 1)
-            mlp_out = nn.Sequential(lin_out_1, act, dropout, lin_out_2)
+            if self.dropout_rate:
+                dropout = nn.Dropout(self.dropout_rate)
+                mlp_out = nn.Sequential(lin_out_1, act, dropout, lin_out_2)
+            else:
+                mlp_out = nn.Sequential(lin_out_1, act, lin_out_2)
             # nn.init.zeros_(lin_out.weight)
             # nn.init.zeros_(lin_out.bias)
             setattr(self, f"out_mlp_{i}", mlp_out)            
