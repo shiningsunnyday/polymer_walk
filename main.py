@@ -249,13 +249,14 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats, feat_
         y_hat = np.array(test_preds)
         y = np.array(props_test)
 
-        if 'group-contrib' in args.walks_file:
-            col_names = ['H2','N2','O2','CH4','CO2']
-            i1, i2 = args.property_cols
-            metric_names = [f'permeability_{col_names[i1]}', f'selectivity_{col_names[i1]}_{col_names[i2]}']
-        elif 'permeability' in args.walks_file:
+        if 'permeability' in args.walks_file:
             col_names = ['log10_He_Bayesian','log10_H2_Bayesian','log10_O2_Bayesian','log10_N2_Bayesian','log10_CO2_Bayesian','log10_CH4_Bayesian']            
             metric_names = [col_names[j] for j in args.property_cols]
+        else:
+            print(f"assuming {args.walks_file} is group-contrib")
+            col_names = ['H2','N2','O2','CH4','CO2']
+            i1, i2 = args.property_cols
+            metric_names = [f'permeability_{col_names[i1]}', f'selectivity_{col_names[i1]}_{col_names[i2]}']    
 
         metric = {}
         if not (y == y).all():
@@ -322,16 +323,19 @@ def preprocess_data(all_dags, args, logs_folder):
         dag_ids[dag.dag_id] = dag
     for i, l in enumerate(lines):        
         if i not in dag_ids: continue
-        if 'group-contrib' in args.walks_file:
-            prop = l.rstrip('\n').split(' ')[-1]
-            prop = prop.strip('(').rstrip(')').split(',')
-        elif 'permeability' in args.walks_file:
+        if 'permeability' in args.walks_file:
             prop = l.rstrip('\n').split(',')[1:]
         else:
-            raise
+            prop = l.rstrip('\n').split(' ')[-1]
+            prop = prop.strip('(').rstrip(')').split(',')
      
         if args.property_cols:
-            if 'group-contrib' in args.walks_file:
+            if 'permeability' in args.walks_file:
+                prop = list(map(float, prop))
+                mask.append(i)
+                props.append([prop[j] for j in args.property_cols])
+                dags.append(dag_ids[i])
+            else:
                 try:
                     prop = list(map(lambda x: float(x) if x not in ['-','_'] else None, prop))
                 except:
@@ -341,13 +345,6 @@ def preprocess_data(all_dags, args, logs_folder):
                     mask.append(i)
                     props.append([prop[i1],prop[i1]/prop[i2]])
                     dags.append(dag_ids[i])
-            elif 'permeability' in args.walks_file:
-                prop = list(map(float, prop))
-                mask.append(i)
-                props.append([prop[j] for j in args.property_cols])
-                dags.append(dag_ids[i])
-            else:
-                breakpoint()
     
     props = np.array(props)
     mean, std = np.mean(props,axis=0,keepdims=True), np.std(props,axis=0,keepdims=True)    
@@ -423,11 +420,11 @@ def main(args):
 
     if args.mol_feat == 'fp':
         feat_lookup = {}
-        if 'group-contrib' in args.walks_file:
-            for i in range(1,98):
-                feat_lookup[name_group(i)] = mol2fp(mols[i-1])[0]
-        elif 'permeability' in args.walks_file:
+        if 'permeability' in args.walks_file:
             for i in range(1,len(mols)+1):
+                feat_lookup[name_group(i)] = mol2fp(mols[i-1])[0]            
+        else:
+            for i in range(1,98):
                 feat_lookup[name_group(i)] = mol2fp(mols[i-1])[0]            
         mol_feats = np.zeros((len(G), 2048), dtype=np.float32)
         for n in G.nodes():
@@ -440,7 +437,7 @@ def main(args):
     elif args.mol_feat == 'W':
         mol_feats = torch.zeros((len(G), len(G)))
     elif args.mol_feat == 'unimol':
-        assert 'group-contrib' in args.walks_file
+        assert len(mols) == 97
         unimol_feats = torch.load('data/group_reprs.pt')
         for i, unimol_feat in enumerate(unimol_feats):
             unimol_feats[i] = unimol_feat.mean(axis=0)

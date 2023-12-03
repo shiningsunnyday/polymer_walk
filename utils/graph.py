@@ -4,12 +4,13 @@ from itertools import product, permutations
 import random
 import networkx as nx
 import sys
-sys.path.append('/home/msun415/my_data_efficient_grammar/')
+sys.path.append('/home/msun415/data_efficient_grammar/')
 
 from fuseprop import __extract_subgraph
 
-# mols = load_mols('data/datasets/group-contrib/all_groups')
-# annotate_extra(mols, 'data/datasets/group-contrib/all_groups/all_extra.txt')
+"""FOR GROUP CONTRIBUTION"""
+mols = load_mols('data/datasets/group-contrib/all_groups')
+annotate_extra(mols, 'data/datasets/group-contrib/all_groups/all_extra.txt')
 
 # mols = load_mols('data/datasets/pu_groups/all_groups')
 # annotate_extra(mols, 'data/datasets/pu_groups/all_groups/all_extra.txt')
@@ -17,8 +18,9 @@ from fuseprop import __extract_subgraph
 # mols = load_mols('data/datasets/lipophilicity/all_groups')
 # annotate_extra(mols, 'data/datasets/lipophilicity/all_groups/all_extra.txt')
 
-mols = load_mols('data/datasets/datasetA_permeability/all_groups')
-annotate_extra(mols, 'data/datasets/datasetA_permeability/all_groups/all_extra.txt')
+"""FOR PERMEABILITY"""
+# mols = load_mols('data/datasets/datasetA_permeability/all_groups')
+# annotate_extra(mols, 'data/datasets/datasetA_permeability/all_groups/all_extra.txt')
 
 class Node:
     def __init__(self, parent, children, val, id, side_chain=False):        
