@@ -324,6 +324,7 @@ class Predictor(nn.Module):
                  act='relu', 
                  share_params=True,
                  in_mlp=False,
+                 mlp_out=False,
                  dropout_rate=0,
                  **kwargs):
         super().__init__()
@@ -334,6 +335,7 @@ class Predictor(nn.Module):
         self.hidden_dim = hidden_dim
         self.gnn = gnn
         self.in_mlp = in_mlp
+        self.do_mlp_out = mlp_out
         self.share_params = share_params
         self.dropout_rate = dropout_rate
         if act == 'relu':
@@ -358,6 +360,24 @@ class Predictor(nn.Module):
                 # nn.init.zeros_(lin_out.bias)
                 layer_name = f"in_mlp" if share_params else f"in_mlp_{i}"
                 setattr(self, layer_name, mlp_in)
+
+
+        if self.do_mlp_out:
+            for i in range(1, num_heads+1):
+                if share_params and i < num_heads:
+                    continue
+                lin_out_1 = nn.Linear(hidden_dim, hidden_dim)
+                lin_out_2 = nn.Linear(hidden_dim, hidden_dim)
+                if self.dropout_rate:
+                    dropout = nn.Dropout(self.dropout_rate)
+                    mlp_out = nn.Sequential(lin_out_1, act, dropout, lin_out_2)
+                else:
+                    mlp_out = nn.Sequential(lin_out_1, act, lin_out_2)
+                # nn.init.zeros_(lin_out.weight)
+                # nn.init.zeros_(lin_out.bias)
+                layer_name = f"mlp_out" if share_params else f"mlp_out_{i}"
+                setattr(self, layer_name, mlp_out)
+
 
         if gnn == 'gin':
             for j in range(1, num_heads+1):
@@ -390,11 +410,11 @@ class Predictor(nn.Module):
                 for j in range(1, num_heads+1):
                     setattr(self, f"gnn_conv_{j}", layer_name[gnn](input_dim, hidden_channels=hidden_dim, num_layers=num_layers, out_channels=hidden_dim))
         else:
-            raise NotImplementedError  
+            raise NotImplementedError
                       
 
         for i in range(1, num_heads+1):
-            lin_out_1 = nn.Linear(hidden_dim, hidden_dim)            
+            lin_out_1 = nn.Linear(hidden_dim, hidden_dim)
             lin_out_2 = nn.Linear(hidden_dim, 1)
             if self.dropout_rate:
                 dropout = nn.Dropout(self.dropout_rate)
@@ -403,7 +423,7 @@ class Predictor(nn.Module):
                 mlp_out = nn.Sequential(lin_out_1, act, lin_out_2)
             # nn.init.zeros_(lin_out.weight)
             # nn.init.zeros_(lin_out.bias)
-            setattr(self, f"out_mlp_{i}", mlp_out)            
+            setattr(self, f"out_mlp_{i}", mlp_out)
         
         
 
@@ -418,20 +438,29 @@ class Predictor(nn.Module):
                     X_out = getattr(self, "in_mlp" if self.share_params else f"in_mlp_{j}")(X_out)
                 for i in range(1, self.num_layers+1):
                     layer_name = f"gnn_{i}" if self.share_params else f"gnn_{i}_{j}"
-                    X_out = getattr(self, layer_name)(X_out, edge_index)
+                    X_out = getattr(self, layer_name)(X_out, edge_index, edge_weights)
                 head_outs.append(X_out)
             if self.share_params:
                 assert len(head_outs) == 1
                 X = head_outs[0]
+                if self.do_mlp_out:
+                    X = getattr(self, "mlp_out")(X)
                 props = [getattr(self, f"out_mlp_{i}")(X.sum(axis=0)) for i in range(1,self.num_heads+1)] 
             else:
                 assert len(head_outs) == self.num_heads
-                props = [getattr(self, f"out_mlp_{i}")(head_outs[i-1].sum(axis=0)) for i in range(1,self.num_heads+1)] 
+                props = []                
+                for i in range(1,self.num_heads+1):
+                    if self.do_mlp_out:
+                        head_outs[i-1] = getattr(self, f"mlp_out_{i}")(head_outs[i-1])
+                    props.append(getattr(self, f"out_mlp_{i}")(head_outs[i-1].sum(axis=0)))
         elif self.gnn in ['gat', 'gcn']:
             if self.share_params:
                 if self.in_mlp:
                     X = getattr(self, "in_mlp" if self.share_params else f"in_mlp_{j}")(X)                
+                
                 X = getattr(self, f"gnn_conv")(X, edge_index, edge_weights)
+                if self.do_mlp_out:
+                    X = getattr(self, "mlp_out")(X)                
                 props = [getattr(self, f"out_mlp_{i}")(X.sum(axis=0)) for i in range(1,self.num_heads+1)]
             else:
                 head_outs = []
@@ -441,7 +470,11 @@ class Predictor(nn.Module):
                         X_out = getattr(self, "in_mlp" if self.share_params else f"in_mlp_{j}")(X_out)                       
                     X_out = getattr(self, f"gnn_conv_{j}")(X_out, edge_index, edge_weights)          
                     head_outs.append(X_out)
-                props = [getattr(self, f"out_mlp_{i}")(head_outs[i-1].sum(axis=0)) for i in range(1,self.num_heads+1)] 
+                props = []                
+                for i in range(1,self.num_heads+1):
+                    if self.do_mlp_out:
+                        head_outs[i-1] = getattr(self, f"mlp_out_{i}")(head_outs[i-1])
+                    props.append(getattr(self, f"out_mlp_{i}")(head_outs[i-1].sum(axis=0)))
         else:
             raise
         
@@ -451,8 +484,10 @@ class Predictor(nn.Module):
 def state_to_probs(state):
     state = torch.where(state>=0., state, 0.0)
     if state.sum(axis=-1):
+        # return F.softmax(state)
         return state/state.sum(axis=-1)
     else:
+        breakpoint()
         return state
     state = state - state.min(-1, True).values
     return state/state.sum(axis=-1)
@@ -463,7 +498,6 @@ def diffuse(graph, log_folder, **diff_args):
     G = graph.graph
     print(f"state at 0: {graph.get_state()}")    
     N, M = len(G), 1 if diff_args['combine_walks'] else len(graph.processes)
-    diff_args['adj_matrix'] = nx.adjacency_matrix(G).toarray()
     if diff_args['e_init']:
         diff_args['init_e'] = nx.adjacency_matrix(G).toarray()
     model = L_grammar(N, diff_args)
@@ -788,6 +822,7 @@ def main(args):
     graph = DiffusionGraph(dags, graph, **diffusion_args) 
     G = graph.graph
     all_nodes = list(G.nodes())
+    diffusion_args['adj_matrix'] = nx.adjacency_matrix(G).toarray()    
     if args.log_folder:
         model = L_grammar(len(graph.graph), diffusion_args)
         state = torch.load(os.path.join(args.log_folder, 'ckpt.pt'))

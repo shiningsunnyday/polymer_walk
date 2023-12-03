@@ -43,7 +43,11 @@ if __name__ == "__main__":
     graph = nx.read_edgelist(args.predefined_graph_file, create_using=nx.MultiDiGraph)    
     r_lookup = r_member_lookup(mols)
     if args.trained_E_file:
-        E_trained = json.load(open(args.trained_E_file, 'r'))
+        if '.json' in args.trained_E_file:
+            E_trained = json.load(open(args.trained_E_file, 'r'))
+        else:
+            raise NotImplementedError
+            
     dags = {}
     used_edges = set()
     num_colors = 0
@@ -70,8 +74,9 @@ if __name__ == "__main__":
                         breakpoint()                    
                     nx.write_edgelist(grps, save_file, data=True)                
                     files.add(save_file)
-            except (KeyError, RuntimeError) as e:
+            except Exception as e:
                 breakpoint()
+                root, conn = verify_walk(r_lookup, graph, grps)
                 if type(e) == KeyError:
                     print(e)
                 else:
@@ -105,23 +110,32 @@ if __name__ == "__main__":
             conns.append(conn)
 
 
+    num_color_walks = 0
     for i, conn in enumerate(conns):
-        do_color = False
-        if num_colors >= 5: do_color = False
+        do_color = True
+        if num_colors >= num_color_walks: 
+            do_color = False
         else:
+            # test for overlap
             for a, b, e in conn:
                 if (a.val,b.val,e) in used_edges:
                     do_color = False
+
             num_colors += do_color
+
         for a, b, e in conn:            
             try:
-                graph[a.val][b.val][e]['weight'] = graph[a.val][b.val][e].get('weight', 0)+.5
-                graph[b.val][a.val][e]['weight'] = graph[b.val][a.val][e].get('weight', 0)+.5
+
+                if args.trained_E_file:
+                    graph[a.val][b.val][e]['weight'] = E_trained[a.val][b.val]*5
+                    graph[b.val][a.val][e]['weight'] = E_trained[b.val][a.val]*5
+                else:
+                    graph[a.val][b.val][e]['weight'] = graph[a.val][b.val][e].get('weight', 0)+.5
+                    graph[b.val][a.val][e]['weight'] = graph[b.val][a.val][e].get('weight', 0)+.5
+                
                 if do_color: 
                     graph[a.val][b.val][e]['color'] = graph[b.val][a.val][e]['color'] = base_colors[num_colors%len(base_colors)]
                     used_edges.add((a.val,b.val,e))
-                    graph[a.val][b.val][e]['weight'] = E_trained[a.val][b.val]*100 if args.trained_E_file else 40
-                    graph[b.val][a.val][e]['weight'] = E_trained[b.val][a.val]*100 if args.trained_E_file else 40
                 else: 
                     graph[a.val][b.val][e]['color'] = graph[b.val][a.val][e]['color'] = 'red'
             except:
@@ -129,10 +143,10 @@ if __name__ == "__main__":
                           
 
     if args.out_path:
-        breakpoint()
+        # breakpoint()
         print(f"processed {len(dags)}/{len(lines)} dags")
         pickle.dump(dags, open(args.out_path, 'wb+'))
-        breakpoint()
+        # breakpoint()
 
     # G = nx.MultiDiGraph(e)
     fig = plt.Figure(figsize=(50, 50))

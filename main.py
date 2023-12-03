@@ -123,6 +123,7 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats, feat_
                           act=args.act, 
                           share_params=args.share_params,
                           in_mlp=args.in_mlp,
+                          mlp_out=args.mlp_out,
                           dropout_rate=args.dropout_rate)
     if args.predictor_ckpt:
         state = torch.load(args.predictor_ckpt)
@@ -132,15 +133,18 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats, feat_
     if args.cuda > -1:
         predictor.to(f"cuda:{args.cuda}")
     if args.update_grammar:
-        all_params = list(model.parameters()) + list(predictor.parameters())
-        if args.predictor_ckpt:
-            all_params = list(model.parameters())
+        all_params = []
+        all_params.append({'params': list(model.parameters()), 'lr': args.grammar_lr})
+        if not args.predictor_ckpt:
+            all_params.append({'params': list(predictor.parameters()), 'lr': args.lr})
     else:
         all_params = list(predictor.parameters())
+
+
     if args.opt == 'sgd':
         opt = torch.optim.SGD(all_params, lr=args.lr, momentum=args.momentum)
     elif args.opt == 'adam':
-        opt = torch.optim.Adam(all_params)
+        opt = torch.optim.Adam(all_params, lr=args.lr)
     else:
         raise
     loss_func = nn.MSELoss()   
@@ -469,6 +473,7 @@ def main(args):
     if args.feat_concat_W: 
         input_dim += len(G)
     setattr(args, 'input_dim', input_dim)
+    diffusion_args['adj_matrix'] = nx.adjacency_matrix(G).toarray()
 
     if args.predictor_file and args.grammar_file:    
         setattr(args, 'logs_folder', os.path.dirname(args.predictor_file))            
@@ -524,6 +529,7 @@ def main(args):
                         walks.add(name_traj)                        
                         proc = DiffusionProcess(root, graph.index_lookup, **diffusion_args)
                         node_attr, edge_index, edge_attr = featurize_walk(graph, model, root, proc, mol_feats, feat_lookup)
+                        W_adj = walk_edge_weight(root, graph, model, proc)
                         X = node_attr
                         prop = do_predict(predictor, X, edge_index, edge_attr, cuda=args.cuda)
                         print("predicted prop", prop)
@@ -576,8 +582,13 @@ def main(args):
 
     out = []
     out_2 = []
-    col_names = ['H2','N2','O2','CH4','CO2']
     i1, i2 = args.property_cols
+    if 'permeability' in args.walks_file:
+        col_names = ['log10_He_Bayesian','log10_H2_Bayesian','log10_O2_Bayesian','log10_N2_Bayesian','log10_CO2_Bayesian','log10_CH4_Bayesian']            
+    else:
+        print(f"assuming {args.walks_file} is group-contrib")
+        col_names = ['H2','N2','O2','CH4','CO2']
+        i1, i2 = args.property_cols
     with open(os.path.join(args.logs_folder, 'novel_props.txt'), 'w+') as f:
         f.write(f"walk,{col_names[i1]},{col_names[i2]},{col_names[i1]}/{col_names[i2]}\n")
         for i, x in enumerate(novel):
@@ -701,6 +712,7 @@ if __name__ == "__main__":
     # training params
     parser.add_argument('--num_epochs', type=int)
     parser.add_argument('--lr', type=float, default=1e-3)
+    parser.add_argument('--grammar_lr', type=float, default=1e-3)
     parser.add_argument('--momentum', type=float, default=0.0)
     parser.add_argument('--num_accumulation_steps', type=int, default=1)
     parser.add_argument('--opt', default='adam')
@@ -717,11 +729,12 @@ if __name__ == "__main__":
     parser.add_argument('--act', default='relu')
     parser.add_argument('--share_params', action='store_false')
     parser.add_argument('--in_mlp', action='store_true')
+    parser.add_argument('--mlp_out', action='store_true')
     parser.add_argument('--dropout_rate', type=float, default=0.)
 
     # sampling params
     parser.add_argument('--num_generate_samples', type=int, default=100)
 
-    args = parser.parse_args()    
+    args = parser.parse_args()
     
     main(args)
