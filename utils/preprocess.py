@@ -7,7 +7,10 @@ import networkx as nx
 from data import *
 
 def name_group(m):
-    return f"G{m}" # not group contrib
+    """FOR PERMEABILITY"""
+    # return f"G{m}" # not group contrib
+
+    """FOR GROUP CONTRIBUTION"""
     prefix = lambda x: "P" if x <= 41 else ("S" if x <= 73 else "L")
     return prefix(m)+f"{m if m<=41 else m-41 if m<=73 else m-73}"
 
@@ -132,18 +135,31 @@ def load_mols(folder):
         #     mols[-1] = mol            
         #     breakpoint()   
         # if 'permeability' in folder and f == '396.mol':
-            # breakpoint()
-            # wrong_inds = [13,9,8]
-            # right_inds = [9,8,13]
-            # inds = list(range(mols[-1].GetNumAtoms()))
-            # for w, r in zip(wrong_inds, right_inds):
-            #     inds[w] = r
-            # mol = Chem.RenumberAtoms(mols[-1], inds)
-            # for i, a in enumerate(mol.GetAtoms()): 
-            #     a.SetProp("molAtomMapNumber", str(i+1))                
-            # Chem.rdmolfiles.MolToMolFile(mol, 'data/datasets/datasetA_permeability/all_groups/396.mol')
-            # mols[-1] = mol            
-            # breakpoint()               
+        #     breakpoint()
+        #     wrong_inds = [8,9,13]
+        #     right_inds = [13,8,9]
+        #     inds = list(range(mols[-1].GetNumAtoms()))
+        #     for w, r in zip(wrong_inds, right_inds):
+        #         inds[r] = w
+        #     mol = Chem.RenumberAtoms(mols[-1], inds)
+        #     for i, a in enumerate(mol.GetAtoms()): 
+        #         a.SetProp("molAtomMapNumber", str(i+1))                
+        #     Chem.rdmolfiles.MolToMolFile(mol, 'data/datasets/datasetA_permeability/all_groups/396.mol')
+        #     mols[-1] = mol
+        #     breakpoint()
+        # if 'permeability' in folder and f == '36.mol':
+        #     breakpoint()
+        #     wrong_inds = [8,9,13]
+        #     right_inds = [13,8,9]
+        #     inds = list(range(mols[-1].GetNumAtoms()))
+        #     for w, r in zip(wrong_inds, right_inds):
+        #         inds[r] = w
+        #     mol = Chem.RenumberAtoms(mols[-1], inds)
+        #     for i, a in enumerate(mol.GetAtoms()): 
+        #         a.SetProp("molAtomMapNumber", str(i+1))                
+        #     Chem.rdmolfiles.MolToMolFile(mol, 'data/datasets/datasetA_permeability/all_groups/396.mol')
+        #     mols[-1] = mol
+        #     breakpoint()        
         # if f == '47.mol':
         #     wrong_inds = [13,14,15,16]
         #     right_inds = [16,15,14,13]

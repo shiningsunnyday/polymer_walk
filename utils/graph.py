@@ -18,6 +18,7 @@ annotate_extra(mols, 'data/datasets/group-contrib/all_groups/all_extra.txt')
 # mols = load_mols('data/datasets/lipophilicity/all_groups')
 # annotate_extra(mols, 'data/datasets/lipophilicity/all_groups/all_extra.txt')
 
+"""FOR PERMEABILITY"""
 # mols = load_mols('data/datasets/datasetA_permeability/all_groups')
 # annotate_extra(mols, 'data/datasets/datasetA_permeability/all_groups/all_extra.txt')
 
@@ -400,7 +401,7 @@ def search_walk(i, walk, graph, cur):
     return []
 
 
-def find_e(a, b, e1):
+def find_e(graph, a, b, e1):
     r_grp_1 = graph[a][b][e1]['r_grp_1']
     r_grp_2 = graph[a][b][e1]['r_grp_2']
     e2s = []
@@ -535,7 +536,7 @@ def traverse_dfs(walk, graph):
                     breakpoint()            
                 else: # cycle back to root
                     e = walk[cur][j]['e'] 
-                    e_cyc = find_e(nodes[cur].val, nodes[j].val, e)       
+                    e_cyc = find_e(graph, nodes[cur].val, nodes[j].val, e)       
                     nodes[cur].add_child((nodes[j], e))
                     nodes[j].parent = (nodes[cur], e_cyc)
                     conn.append((nodes[j], nodes[cur], e_cyc))                    
@@ -545,7 +546,7 @@ def traverse_dfs(walk, graph):
             nodes[j] = node    
             e = walk[cur][j]['e']        
             nodes[cur].add_child((nodes[j], e))
-            nodes[j].parent = (nodes[cur], find_e(nodes[cur].val, nodes[j].val, e))
+            nodes[j].parent = (nodes[cur], find_e(graph, nodes[cur].val, nodes[j].val, e))
             conn.append((nodes[cur], nodes[j], e))
     
 
@@ -633,7 +634,7 @@ def verify_walk(r_lookup, graph, walk):
                 raise RuntimeError(walk)               
         else: 
             raise NotImplementedError
-    except Exception as e:
+    except Exception as e:        
         raise e
          
     return root, edge_conn

@@ -152,7 +152,7 @@ if __name__ == "__main__":
     #     lines = sorted(os.listdir(args.walks_folder), key=lambda f: int(''.join(list(filter(lambda x: x.isdigit(), f)))))
     #     for f in lines:
     #         G = nx.read_edgelist(os.path.join(args.walks_folder, f), create_using=nx.MultiDiGraph)
-    #         if not G.nodes():
+    #         if len(G.nodes()) < 2:
     #             continue
     #         for e in G.edges:
     #             checks.append((e[0].split(':')[0], e[1].split(':')[0]))
@@ -163,12 +163,13 @@ if __name__ == "__main__":
     #     if not reds_isomorphic(*[name_to_id[c] for c in check]):
     #         if 'P40' not in check:
     #             breakpoint()
-    os.makedirs(os.path.join(args.motifs_folder, f'with_label/'), exist_ok=True)
-    for i, mol in enumerate(mols):
-        Draw.MolToFile(mol, os.path.join(args.motifs_folder, f'with_label/{i+1}.png'), size=(2000, 2000))
-        Draw.MolToFile(mol, os.path.join(args.motifs_folder, f'with_label/{name_group(i+1)}.png'), size=(2000, 2000))
+    # os.makedirs(os.path.join(args.motifs_folder, f'with_label/'), exist_ok=True)
+    # for i, mol in enumerate(mols):
+    #     Draw.MolToFile(mol, os.path.join(args.motifs_folder, f'with_label/{i+1}.png'), size=(1000, 1000))
+    #     Draw.MolToFile(mol, os.path.join(args.motifs_folder, f'with_label/{name_group(i+1)}.png'), size=(1000, 1000))
+    breakpoint()
     with Pool(32) as p:    
-        res = p.starmap(reds_isomorphic, pargs)  
+        res = p.starmap(reds_isomorphic, pargs)      
     # res = []
     # for arg in pargs:
     #     res.append(reds_isomorphic(*arg))  

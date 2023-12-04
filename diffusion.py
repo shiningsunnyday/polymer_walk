@@ -35,17 +35,22 @@ class DiffusionProcess:
         self.child_nums = [len(self.side_childs(a)) for a in self.main_chain[:-1]]
         self.total = np.prod([factorial(x) for x in self.child_nums])        
         self.split = split
-        self.dfs_dir = dfs_seed >= 0
-        dfs_seed = abs(dfs_seed)
-        self.dfs_seed = dfs_seed % self.total # 0 to X-1, where X := prod_(node in main chain) num_childs(node)
         self.reset()
-        if not self.split:
+
+        if self.split:
+            res = []
+            self.dfs_walk(dag, res)
+            self.dfs_order = res
+            self.num_nodes = len(res)
+        else:
+            self.dfs_dir = dfs_seed >= 0
+            dfs_seed = abs(dfs_seed)
+            self.dfs_seed = dfs_seed % self.total # 0 to X-1, where X := prod_(node in main chain) num_childs(node)            
             res = self.compute_dfs(dag)
             new_res = self.augment_walk_order(res, dfs_seed)
             self.dfs_order = new_res
             self.num_nodes = len(res)
-        else:
-            raise
+
 
 
     def augment_walk_order(self, res, dfs_seed):
@@ -141,8 +146,9 @@ class DiffusionProcess:
     def reset(self):
         self.t = 0
         self.state = np.array([0.0 for _ in self.lookup])
-        self.state[self.lookup[self.dag.val]] = 1.0
-        self.frontier = {self.dag: 1}
+        if self.dag.val in self.lookup:
+            self.state[self.lookup[self.dag.val]] = 1.0
+            self.frontier = {self.dag: 1}       
 
 
     def step(self):
@@ -188,7 +194,10 @@ class DiffusionGraph:
         self.diffusion_args = diffusion_args
         self.t = 0        
         self.processes = []
-        self.index_lookup = self.modify_graph(dags, graph)
+
+        # account for all non-single-node dags
+        self.index_lookup = self.modify_graph(dags, graph)        
+
         for dag in dags:
             if dag.id:
                 breakpoint()
@@ -214,7 +223,10 @@ class DiffusionGraph:
                 breakpoint()
             for k, v in value_counts.items():
                 max_value_count[k] = max(max_value_count.get(k, 0), v)
-        
+            
+        """
+        Add nodes of the form GX:1, GX:2, ... representing re-visits to group X in the same walk
+        """
         for k, count in max_value_count.items():
             if count == 1: continue
             for i in range(count):
@@ -270,10 +282,10 @@ class L_grammar(nn.Module):
         if diff_args['e_init']:
             E = torch.as_tensor(diff_args['init_e'], dtype=torch.float64)
         else:
-            E = torch.zeros((N, N), dtype=torch.float64)    
+            E = torch.rand((N, N), dtype=torch.float64)
+        self.A = torch.as_tensor(diff_args['adj_matrix'], dtype=torch.float64)
         self.E = nn.Parameter(E)
-        self.scale = nn.Parameter(torch.ones((1,), dtype=torch.float64))
-        self.A = torch.as_tensor(E.clone().detach(), dtype=torch.float64)
+        self.scale = nn.Parameter(torch.ones((self.A.shape[0],), dtype=torch.float64))        
         self.context_layer = nn.Linear(N, N*N, dtype=torch.float64)
         nn.init.zeros_(self.context_layer.weight)
         nn.init.zeros_(self.context_layer.bias)
@@ -288,11 +300,17 @@ class L_grammar(nn.Module):
                 W_new = adjust + self.E # (M, N, N)
             else:
                 W_new = self.E
-            L = torch.diag_embed(torch.matmul(W_new,self.A[None]).sum(axis=-2))-W_new # (M, N, N)
+            # W_new is (M, N, N)
+            # self.A[None] is (1, N, N)
+            W_hat = torch.matmul(W_new,self.A[None]) # (M, N, N)
+            W_hat = W_hat.sum(axis=-2) # (M, N)
+            W_hat_diag = torch.diag_embed(W_hat) # (M, N, N)
+            L = W_hat_diag-W_new # (M, N, N)
+            L = L/L.sum(axis=-1, keepdim=True)
         
-        context = context*t/(t+1) + X/(t+1)              
-        L_T = self.scale * torch.transpose(L, -1,-2)
-        update = torch.matmul(X[...,None,:],L_T).squeeze()
+        context = context*t/(t+1) + X/(t+1)        
+        L_T = self.scale[None,...,None] * torch.transpose(L, -1,-2)
+        update = torch.matmul(X[...,None,:],L_T).squeeze() # sum to 0
         return update, context
     
 
@@ -306,6 +324,7 @@ class Predictor(nn.Module):
                  act='relu', 
                  share_params=True,
                  in_mlp=False,
+                 mlp_out=False,
                  dropout_rate=0,
                  **kwargs):
         super().__init__()
@@ -316,6 +335,7 @@ class Predictor(nn.Module):
         self.hidden_dim = hidden_dim
         self.gnn = gnn
         self.in_mlp = in_mlp
+        self.do_mlp_out = mlp_out
         self.share_params = share_params
         self.dropout_rate = dropout_rate
         if act == 'relu':
@@ -331,12 +351,33 @@ class Predictor(nn.Module):
                     continue
                 lin_out_1 = nn.Linear(input_dim, hidden_dim)
                 lin_out_2 = nn.Linear(hidden_dim, hidden_dim)
-                dropout = nn.Dropout(self.dropout_rate)
-                mlp_in = nn.Sequential(lin_out_1, act, dropout, lin_out_2)
+                if self.dropout_rate:
+                    dropout = nn.Dropout(self.dropout_rate)
+                    mlp_in = nn.Sequential(lin_out_1, act, dropout, lin_out_2)
+                else:
+                    mlp_in = nn.Sequential(lin_out_1, act, lin_out_2)
                 # nn.init.zeros_(lin_out.weight)
                 # nn.init.zeros_(lin_out.bias)
                 layer_name = f"in_mlp" if share_params else f"in_mlp_{i}"
                 setattr(self, layer_name, mlp_in)
+
+
+        if self.do_mlp_out:
+            for i in range(1, num_heads+1):
+                if share_params and i < num_heads:
+                    continue
+                lin_out_1 = nn.Linear(hidden_dim, hidden_dim)
+                lin_out_2 = nn.Linear(hidden_dim, hidden_dim)
+                if self.dropout_rate:
+                    dropout = nn.Dropout(self.dropout_rate)
+                    mlp_out = nn.Sequential(lin_out_1, act, dropout, lin_out_2)
+                else:
+                    mlp_out = nn.Sequential(lin_out_1, act, lin_out_2)
+                # nn.init.zeros_(lin_out.weight)
+                # nn.init.zeros_(lin_out.bias)
+                layer_name = f"mlp_out" if share_params else f"mlp_out_{i}"
+                setattr(self, layer_name, mlp_out)
+
 
         if gnn == 'gin':
             for j in range(1, num_heads+1):
@@ -348,14 +389,17 @@ class Predictor(nn.Module):
                         if i > 1: 
                             input_dim = hidden_dim     
                         lin_i_1 = nn.Linear(input_dim, hidden_dim)
-                        lin_i_2 = nn.Linear(hidden_dim, hidden_dim)
-                        dropout = nn.Dropout(self.dropout_rate)
+                        lin_i_2 = nn.Linear(hidden_dim, hidden_dim)                        
                         # nn.init.zeros_(lin_i_1.weight)
                         # nn.init.zeros_(lin_i_2.weight)
                         # nn.init.zeros_(lin_i_1.bias)
                         # nn.init.zeros_(lin_i_2.bias)                                    
                         # setattr(self, f"gnn_{i}", GATConv(in_channels=-1, out_channels=hidden_dim, edge_dim=1))
-                        mlp = nn.Sequential(lin_i_1, act, dropout, lin_i_2)
+                        if self.dropout_rate:
+                            dropout = nn.Dropout(self.dropout_rate)
+                            mlp = nn.Sequential(lin_i_1, act, dropout, lin_i_2)
+                        else: 
+                            mlp = nn.Sequential(lin_i_1, act, lin_i_2)
                         layer_name = f"gnn_{i}" if share_params else f"gnn_{i}_{j}"
                         setattr(self, layer_name, GINConv(mlp, edge_dim=1))               
         elif gnn in ['gat', 'gcn']:
@@ -366,17 +410,20 @@ class Predictor(nn.Module):
                 for j in range(1, num_heads+1):
                     setattr(self, f"gnn_conv_{j}", layer_name[gnn](input_dim, hidden_channels=hidden_dim, num_layers=num_layers, out_channels=hidden_dim))
         else:
-            raise NotImplementedError  
+            raise NotImplementedError
                       
 
         for i in range(1, num_heads+1):
             lin_out_1 = nn.Linear(hidden_dim, hidden_dim)
-            dropout = nn.Dropout(self.dropout_rate)
             lin_out_2 = nn.Linear(hidden_dim, 1)
-            mlp_out = nn.Sequential(lin_out_1, act, dropout, lin_out_2)
+            if self.dropout_rate:
+                dropout = nn.Dropout(self.dropout_rate)
+                mlp_out = nn.Sequential(lin_out_1, act, dropout, lin_out_2)
+            else:
+                mlp_out = nn.Sequential(lin_out_1, act, lin_out_2)
             # nn.init.zeros_(lin_out.weight)
             # nn.init.zeros_(lin_out.bias)
-            setattr(self, f"out_mlp_{i}", mlp_out)            
+            setattr(self, f"out_mlp_{i}", mlp_out)
         
         
 
@@ -391,20 +438,29 @@ class Predictor(nn.Module):
                     X_out = getattr(self, "in_mlp" if self.share_params else f"in_mlp_{j}")(X_out)
                 for i in range(1, self.num_layers+1):
                     layer_name = f"gnn_{i}" if self.share_params else f"gnn_{i}_{j}"
-                    X_out = getattr(self, layer_name)(X_out, edge_index)
+                    X_out = getattr(self, layer_name)(X_out, edge_index, edge_weights)
                 head_outs.append(X_out)
             if self.share_params:
                 assert len(head_outs) == 1
                 X = head_outs[0]
+                if self.do_mlp_out:
+                    X = getattr(self, "mlp_out")(X)
                 props = [getattr(self, f"out_mlp_{i}")(X.sum(axis=0)) for i in range(1,self.num_heads+1)] 
             else:
                 assert len(head_outs) == self.num_heads
-                props = [getattr(self, f"out_mlp_{i}")(head_outs[i-1].sum(axis=0)) for i in range(1,self.num_heads+1)] 
+                props = []                
+                for i in range(1,self.num_heads+1):
+                    if self.do_mlp_out:
+                        head_outs[i-1] = getattr(self, f"mlp_out_{i}")(head_outs[i-1])
+                    props.append(getattr(self, f"out_mlp_{i}")(head_outs[i-1].sum(axis=0)))
         elif self.gnn in ['gat', 'gcn']:
             if self.share_params:
                 if self.in_mlp:
                     X = getattr(self, "in_mlp" if self.share_params else f"in_mlp_{j}")(X)                
+                
                 X = getattr(self, f"gnn_conv")(X, edge_index, edge_weights)
+                if self.do_mlp_out:
+                    X = getattr(self, "mlp_out")(X)                
                 props = [getattr(self, f"out_mlp_{i}")(X.sum(axis=0)) for i in range(1,self.num_heads+1)]
             else:
                 head_outs = []
@@ -414,7 +470,11 @@ class Predictor(nn.Module):
                         X_out = getattr(self, "in_mlp" if self.share_params else f"in_mlp_{j}")(X_out)                       
                     X_out = getattr(self, f"gnn_conv_{j}")(X_out, edge_index, edge_weights)          
                     head_outs.append(X_out)
-                props = [getattr(self, f"out_mlp_{i}")(head_outs[i-1].sum(axis=0)) for i in range(1,self.num_heads+1)] 
+                props = []                
+                for i in range(1,self.num_heads+1):
+                    if self.do_mlp_out:
+                        head_outs[i-1] = getattr(self, f"mlp_out_{i}")(head_outs[i-1])
+                    props.append(getattr(self, f"out_mlp_{i}")(head_outs[i-1].sum(axis=0)))
         else:
             raise
         
@@ -423,7 +483,12 @@ class Predictor(nn.Module):
 
 def state_to_probs(state):
     state = torch.where(state>=0., state, 0.0)
-    return state/state.sum(axis=-1)
+    if state.sum(axis=-1):
+        # return F.softmax(state)
+        return state/state.sum(axis=-1)
+    else:
+        breakpoint()
+        return state
     state = state - state.min(-1, True).values
     return state/state.sum(axis=-1)
 
@@ -448,16 +513,21 @@ def diffuse(graph, log_folder, **diff_args):
     # nn.init.zeros_(context_layer.bias)
     # loss_func = nn.MSELoss()   
     # parameters = [W, scale]+list(context_layer.parameters())
-    opt = torch.optim.Adam(model.parameters(), lr=diff_args['alpha'])
+    if diff_args['opt'] == 'adam':
+        opt = torch.optim.Adam(model.parameters(), lr=diff_args['alpha'])
+    elif diff_args['opt'] == 'sgd':
+        opt = torch.optim.Adam(model.parameters(), lr=diff_args['alpha'])
+    else:
+        raise
     history = []
-    T = 100
+    T = 20
     best_loss = float("inf")
     for i in range(diff_args['num_epochs']):
         graph.reset()
         context = torch.zeros((M, N), dtype=torch.float64)
         loss_func = nn.MSELoss()    
-        for t in range(T):
-            t_losses = []
+        t_losses = []
+        for t in range(T):            
             opt.zero_grad()     
             X = torch.as_tensor(graph.get_state(not diff_args['combine_walks'])) # (M, N)
             graph.step()
@@ -485,6 +555,7 @@ def diffuse(graph, log_folder, **diff_args):
         print(plot_file)
 
         if np.mean(t_losses) < best_loss:
+            print(f"E mean: {model.E.mean()}, std: {model.E.std()}")
             best_loss = np.mean(t_losses)
             torch.save(model.state_dict(), os.path.join(log_folder, 'ckpt.pt'))
     return model
@@ -725,7 +796,6 @@ def sample_walks(G, graph, walks, model, all_nodes, r_lookup, predefined_graph):
 def main(args):
     walks = load_walks(args)
     diffusion_args = {k[len('diffusion_'):]: v for (k, v) in args.__dict__.items() if 'diffusion' in k}
-
     graph = nx.read_edgelist(args.predefined_graph_file, create_using=nx.MultiDiGraph)
     predefined_graph = nx.read_edgelist(args.predefined_graph_file, create_using=nx.MultiDiGraph)
     mols = load_mols(args.motifs_folder)
@@ -738,19 +808,21 @@ def main(args):
     data_copy = deepcopy(data)
     dags = []        
     for k, v in data.items():
-        grps, root_node, conn = v    
-        root_node, leaf_node, e = conn[-1]
-        if root_node.id != 0:
-            breakpoint()
-        leaf_node.add_child((root_node, e)) # breaks dag
-        root_node.parent = (leaf_node, e)
-        root_node.dag_id = k
-        dags.append(root_node)
+        grps, root_node, conn = v            
+        if 'group-contrib' in args.motifs_folder:
+            root_node, leaf_node, e = conn[-1]
+            assert root_node.id == 0
+            leaf_node.add_child((root_node, e)) # breaks dag
+            root_node.parent = (leaf_node, e)
+            root_node.dag_id = k
+        if root_node.children: # don't diffuse single-group dags
+            dags.append(root_node)
         
 
     graph = DiffusionGraph(dags, graph, **diffusion_args) 
     G = graph.graph
     all_nodes = list(G.nodes())
+    diffusion_args['adj_matrix'] = nx.adjacency_matrix(G).toarray()    
     if args.log_folder:
         model = L_grammar(len(graph.graph), diffusion_args)
         state = torch.load(os.path.join(args.log_folder, 'ckpt.pt'))
@@ -810,6 +882,7 @@ if __name__ == "__main__":
     parser.add_argument('--e_init', dest='diffusion_e_init', action='store_true')
     parser.add_argument('--context_L', dest='diffusion_context_L', action='store_true')
     parser.add_argument('--alpha', dest='diffusion_alpha', default=1e-4, type=float)
+    parser.add_argument('--opt', dest='diffusion_opt', default='adam')
     parser.add_argument('--num_epochs', dest='diffusion_num_epochs', default=500, type=int)
 
     args = parser.parse_args()

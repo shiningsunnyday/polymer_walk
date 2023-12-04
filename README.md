@@ -43,6 +43,8 @@ Set the directory to your motifs:
 export dataset=data/datasets/group-contrib
 ```
 
+Go to the top of utils/graph.py and utils/preprocess.py and toggle between group folders, as needed.
+
 Build the motif graph. 
 ```bash
 python walk_grammar.py --motifs_folder $dataset/all_groups/ --extra_label_path $dataset/all_groups/all_extra.txt --out_path $dataset/red_graph.adjlist
@@ -51,8 +53,10 @@ python walk_grammar.py --motifs_folder $dataset/all_groups/ --extra_label_path $
 Preprocess existing random walks.
 
 ```bash
-python construct_graph.py --data data/polymer_walks_v2_preprocess.txt --graph_vis_file $dataset/polymer_walk.png --predefined_graph_file $dataset/red_graph.edgelist --extra_label_path $dataset/all_groups/all_extra.txt --motifs_folder $dataset/all_groups/ --out_path $dataset/dags.pkl
+python construct_graph.py --data data/polymer_walks_v2_preprocess.txt --graph_vis_file $dataset/polymer_walk.png --predefined_graph_file $dataset/red_graph.edgelist --extra_label_path $dataset/all_groups/all_extra.txt --motifs_folder $dataset/all_groups/ --out_path $dataset/dags.pkl --extract_edges
 ```
+
+Remove --extract_edges if your .txt file has no edge info (e.g. L3->S32->S20[->S1,->S1]->S32->L3). The algorithm will guess the edges, but will not guarantee validity.
 
 Train graph diffusion grammar. 
 ```bash
