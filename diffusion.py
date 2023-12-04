@@ -11,7 +11,8 @@ import time
 import json
 from copy import deepcopy
 from math import factorial
-from torch_geometric.nn.conv import GINEConv, GINConv, GATConv, GCNConv
+from torch_geometric.nn.conv import GINEConv, GATConv, GCNConv
+from models.gin_conv import MyGINConv as GINConv
 
 
 class DiffusionProcess:
