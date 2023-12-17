@@ -227,7 +227,6 @@ if __name__ == "__main__":
     parser.add_argument('--E_file')
     parser.add_argument('--motifs_folder')
     parser.add_argument('--predefined_graph_file')
-    parser.add_argument('--walks_file')
     parser.add_argument('--dags_file')
     parser.add_argument('--out_path')
     args = parser.parse_args()

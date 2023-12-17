@@ -322,6 +322,7 @@ class Predictor(nn.Module):
                  num_layers=5, 
                  num_heads=2, 
                  gnn='gin', 
+                 edge_weights=False,
                  act='relu', 
                  share_params=True,
                  in_mlp=False,
@@ -335,6 +336,7 @@ class Predictor(nn.Module):
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.gnn = gnn
+        self.edge_weights = edge_weights
         self.in_mlp = in_mlp
         self.do_mlp_out = mlp_out
         self.share_params = share_params
@@ -439,7 +441,7 @@ class Predictor(nn.Module):
                     X_out = getattr(self, "in_mlp" if self.share_params else f"in_mlp_{j}")(X_out)
                 for i in range(1, self.num_layers+1):
                     layer_name = f"gnn_{i}" if self.share_params else f"gnn_{i}_{j}"
-                    X_out = getattr(self, layer_name)(X_out, edge_index, edge_weights)
+                    X_out = getattr(self, layer_name)(X_out, edge_index, edge_weight=(edge_weights if self.edge_weights else None))
                 head_outs.append(X_out)
             if self.share_params:
                 assert len(head_outs) == 1
@@ -459,7 +461,7 @@ class Predictor(nn.Module):
                 if self.in_mlp:
                     X = getattr(self, "in_mlp" if self.share_params else f"in_mlp_{j}")(X)                
                 
-                X = getattr(self, f"gnn_conv")(X, edge_index, edge_weights)
+                X = getattr(self, f"gnn_conv")(X, edge_index, edge_weight=(edge_weights if self.edge_weights else None))
                 if self.do_mlp_out:
                     X = getattr(self, "mlp_out")(X)                
                 props = [getattr(self, f"out_mlp_{i}")(X.sum(axis=0)) for i in range(1,self.num_heads+1)]
@@ -469,7 +471,7 @@ class Predictor(nn.Module):
                     X_out = X.clone()  
                     if self.in_mlp:
                         X_out = getattr(self, "in_mlp" if self.share_params else f"in_mlp_{j}")(X_out)                       
-                    X_out = getattr(self, f"gnn_conv_{j}")(X_out, edge_index, edge_weights)          
+                    X_out = getattr(self, f"gnn_conv_{j}")(X_out, edge_index, edge_weight=(edge_weights if self.edge_weights else None))          
                     head_outs.append(X_out)
                 props = []                
                 for i in range(1,self.num_heads+1):

@@ -120,6 +120,7 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats, feat_
                           num_layers=args.num_layers, 
                           num_heads=len(norm_props[0]), 
                           gnn=args.gnn, 
+                          edge_weights=args.edge_weights,
                           act=args.act, 
                           share_params=args.share_params,
                           in_mlp=args.in_mlp,
@@ -210,6 +211,7 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats, feat_
                         p.grad /= len(procs)
             opt_step_time = time.time()
             if i == len(dags_copy_train)-1 or i % args.num_accumulation_steps == 0:                 
+                breakpoint()
                 opt.step()
             final_time = time.time()
             times.append([start_feat_time-start_time, start_pred_time-start_feat_time, loss_backward_time-start_pred_time, opt_step_time-loss_backward_time, final_time-opt_step_time])
@@ -491,7 +493,7 @@ def main(args):
     else:    
         predictor_path = os.path.join(args.grammar_folder,f'predictor_{time.time()}')
         os.makedirs(predictor_path, exist_ok=True)
-        setattr(args, 'logs_folder', predictor_path)
+        setattr(args, 'logs_folder', predictor_path)        
         with open(os.path.join(predictor_path, 'config.json'), 'w+') as f:
             json.dump(json.dumps(args.__dict__), f)  
 
@@ -508,12 +510,21 @@ def main(args):
         walks.add(walk)
     new_novel = 1
     seen_dags = deepcopy(dags)
+
+    # eval_trajs = [['L5', 'S21', 'L5'], ['L5', 'P3', 'L5'], ['L5', 'S20', 'L5'], ['L5', 'P11', 'L5']]
+    eval_trajs = []
     while len(novel) < args.num_generate_samples:
         print(f"add {new_novel} samples, now {len(novel)} novel samples")
         new_novel = 0
         for n in G.nodes():
             if ':' in n: continue
-            traj, good = sample_walk(n, G, graph, model, all_nodes)                
+            if eval_trajs:
+                traj = [str(graph.index_lookup[x]) for x in eval_trajs[-1]]
+                eval_trajs.pop(-1)
+                good = True
+            else:
+                traj, good = sample_walk(n, G, graph, model, all_nodes)                
+
             if len(traj) > 1 and good:                    
                 name_traj = process_good_traj(traj, all_nodes)       
                 assert len(traj) == len(name_traj)
@@ -522,7 +533,7 @@ def main(args):
                     DiffusionGraph.value_count(root, {}) # modifies edge_conn with :'s too
                     name_traj = '->'.join(name_traj)
                     trajs.append(name_traj)
-                    # print(name_traj, "success")
+                    # print(name_traj, "success")                    
                     if is_novel(seen_dags, root):
                         seen_dags.append(root)
                         print(name_traj, "novel")
@@ -570,8 +581,9 @@ def main(args):
     print(np.mean(loss_history))
 
     print("best novel samples")
+    
     mean = [] ; std = []
-    with open(os.path.join(os.path.dirname(args.predictor_file), 'mean_and_std.txt')) as f:
+    with open(os.path.join(os.path.dirname(args.logs_folder), 'mean_and_std.txt')) as f:
         while True:
             line = f.readline()
             if not line: break
@@ -662,6 +674,7 @@ def main(args):
     all_walks['novel'] = [[write_conn(x), *list(map(str, prop))] for x, prop in all_walks['novel']]
     print("novel", novel)
     json.dump(all_walks, open(os.path.join(args.logs_folder, 'all_dags.json'), 'w+'))
+    print(f"done! {args.logs_folder}")
 
 
 def run_tests(graph, all_nodes)                :
@@ -725,6 +738,7 @@ if __name__ == "__main__":
     parser.add_argument('--attn_W', action='store_true')
     parser.add_argument('--hidden_dim', type=int, default=16)
     parser.add_argument('--num_layers', type=int, default=5)
+    parser.add_argument('--edge_weights', action='store_false')
     parser.add_argument('--gnn', default='gin')
     parser.add_argument('--act', default='relu')
     parser.add_argument('--share_params', action='store_false')
@@ -733,7 +747,7 @@ if __name__ == "__main__":
     parser.add_argument('--dropout_rate', type=float, default=0.)
 
     # sampling params
-    parser.add_argument('--num_generate_samples', type=int, default=100)
+    parser.add_argument('--num_generate_samples', type=int, default=15)
 
     args = parser.parse_args()
     
