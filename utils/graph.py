@@ -4,7 +4,7 @@ from itertools import product, permutations
 import random
 import networkx as nx
 import sys
-# sys.path.append('/home/msun415/my_data_efficient_grammar/')
+sys.path.append('/home/msun415/my_data_efficient_grammar/')
 sys.path.append('/research/cbim/vast/zz500/Projects/mhg/ICML2024/my_data_efficient_grammar/')
 
 from fuseprop import __extract_subgraph
@@ -176,6 +176,35 @@ def check_isomorphic(mol1, mol2, v1, v2):
                 if b2.GetEndAtom().GetBoolProp('r'): continue
                 return False
     return True
+
+
+def __extract_subgraph(mol, selected_atoms):
+    selected_atoms = set(selected_atoms)
+    roots = []
+    for idx in selected_atoms:
+        atom = mol.GetAtomWithIdx(idx)
+        bad_neis = [y for y in atom.GetNeighbors() if y.GetIdx() not in selected_atoms]
+        if len(bad_neis) > 0:
+            roots.append(idx)
+
+    new_mol = Chem.RWMol(mol)
+    for atom in new_mol.GetAtoms():
+        atom.SetIntProp('org_idx', atom.GetIdx())
+
+    for atom_idx in roots:
+        atom = new_mol.GetAtomWithIdx(atom_idx)
+        atom.SetAtomMapNum(1)
+        aroma_bonds = [bond for bond in atom.GetBonds() if bond.GetBondType() == Chem.rdchem.BondType.AROMATIC]
+        aroma_bonds = [bond for bond in aroma_bonds if bond.GetBeginAtom().GetIdx() in selected_atoms and bond.GetEndAtom().GetIdx() in selected_atoms]
+        if len(aroma_bonds) == 0:
+            atom.SetIsAromatic(False)
+
+    remove_atoms = [atom.GetIdx() for atom in new_mol.GetAtoms() if atom.GetIdx() not in selected_atoms]
+    remove_atoms = sorted(remove_atoms, reverse=True)
+    for atom in remove_atoms:
+        new_mol.RemoveAtom(atom)
+
+    return new_mol.GetMol(), roots
 
 
 def extract_subgraph(mol, selected_atoms): 
