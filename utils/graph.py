@@ -4,10 +4,14 @@ from itertools import product, permutations
 import random
 import networkx as nx
 import sys
+from copy import deepcopy
 sys.path.append('/home/msun415/my_data_efficient_grammar/')
 sys.path.append('/research/cbim/vast/zz500/Projects/mhg/ICML2024/my_data_efficient_grammar/')
 
-from fuseprop import __extract_subgraph
+sys.path.append('/home/msun415/3D-motif-grammar/src/utils')
+sys.path.append('/home/msun415/3D-motif-grammar/src')
+sys.path.append('/home/msun415/3D-motif-grammar')
+from walk import walk_enumerate_mols
 
 mols = load_mols('data/datasets/group-contrib/all_groups')
 annotate_extra(mols, 'data/datasets/group-contrib/all_groups/all_extra.txt')
@@ -83,6 +87,7 @@ def dfs(edges, vis, cur, inds, num):
 
 def connected(mol, inds):
     vis = [0 for _ in range(mol.GetNumAtoms())]
+    assert len(inds)
     cur = inds[0]
     edges = [[b.GetIdx() for b in a.GetNeighbors()] for a in mol.GetAtoms()]
     dfs(edges, vis, cur, inds, len(inds))
@@ -150,6 +155,11 @@ def check_order(orig_mol, mol, cls, r=False):
 
 
 def check_isomorphic(mol1, mol2, v1, v2):        
+    """
+    Strictly speaking, node-level isomorphism is only possible if the black and red atoms
+    have the same atomic number. However, edge-level isomorphism is correct here. We have
+    oxygen atoms replace carbon atoms, etc. but the bonds need to be consistent to ensure validity.
+    """    
     # debug = False
     # if v1 == [14, 15, 4, 3, 2, 1, 0, 5] and v2 == [6, 9, 0, 1, 2, 3, 4, 5]:
     #     breakpoint()
@@ -169,11 +179,15 @@ def check_isomorphic(mol1, mol2, v1, v2):
             b2 = mol2.GetBondBetweenAtoms(v2[i], v2[j])                   
             if (b1 == None) != (b2 == None): 
                 return False
-            if b1 != None and b1.GetBondType() != b2.GetBondType():
-                if b1.GetBeginAtom().GetBoolProp('r'): continue
-                if b2.GetBeginAtom().GetBoolProp('r'): continue
-                if b1.GetEndAtom().GetBoolProp('r'): continue
-                if b2.GetEndAtom().GetBoolProp('r'): continue
+            # if b1 != None and b1.GetBondType() != b2.GetBondType():
+            if b1 != None and abs(b1.GetBondTypeAsDouble()-b2.GetBondTypeAsDouble()) > 0.5:
+                """
+                We must enforce the bond types to be the same.
+                """
+                # if b1.GetBeginAtom().GetBoolProp('r'): continue
+                # if b2.GetBeginAtom().GetBoolProp('r'): continue
+                # if b1.GetEndAtom().GetBoolProp('r'): continue
+                # if b2.GetEndAtom().GetBoolProp('r'): continue
                 return False
     return True
 
@@ -231,38 +245,39 @@ def substruct_matches(mol, subgraph):
     return res
     
 
-def find_isomorphic(mol1, mol2, r_grp_1):
+def find_isomorphic(mol1, mol2, r_grp_1, rdkit=False):
     b2s = []
-    mapped_subgraph = extract_subgraph(mol1, r_grp_1)[1]
-    b2s_new = substruct_matches(mol2, mapped_subgraph)
-    for ring in b2s_new:
-        for i in range(len(ring)):
-            b2s.append(list(ring[i:]+ring[:i]))
-            # b2s.append(list(reversed(b2s[-1])))
-    return b2s
-    for b2 in enumerate_black_subsets(mol2, len(r_grp_1)):
-        b2 = list(b2)
-        if len(r_grp_1) != len(b2): continue
-        if check_isomorphic(mol1, mol2, r_grp_1, b2): 
-            b2s.append(b2)
-    breakpoint()
+    if rdkit:
+        mapped_subgraph = extract_subgraph(mol1, r_grp_1)[1]  
+        b2s_new = substruct_matches(mol2, mapped_subgraph)
+        for ring in b2s_new:
+            for i in range(len(ring)):
+                b2s.append(list(ring[i:]+ring[:i]))
+                # b2s.append(list(reversed(b2s[-1])))
+        return b2s
+    else:
+        for b2 in enumerate_black_subsets(mol2, len(r_grp_1)):
+            b2 = list(b2)
+            if len(r_grp_1) != len(b2): continue
+            if check_isomorphic(mol1, mol2, r_grp_1, b2): 
+                b2s.append(b2)
     return b2s
 
 
-def red_isomorphic(m1, m2, r_grp_1, r_grp_2):
+def red_isomorphic(m1, m2, r_grp_1, r_grp_2, rdkit=False):
     # if m1 == 30 and m2 == 6 and r_grp_1 == [16]:
     #     breakpoint()    
     # if m1 == 57 and m2 == 59:
     #     breakpoint()
     # if m1 == 219 and m2 == 222:
     #     breakpoint()
-    b2s = find_isomorphic(mols[m1-1], mols[m2-1], r_grp_1)
+    b2s = find_isomorphic(mols[m1-1], mols[m2-1], r_grp_1, rdkit=rdkit)
     # if not b2s:
     #     if r_grp_1: 
     #         return []
     #     else:
     #         b2s = [[]]
-    b1s = find_isomorphic(mols[m2-1], mols[m1-1], r_grp_2)
+    b1s = find_isomorphic(mols[m2-1], mols[m1-1], r_grp_2, rdkit=rdkit)
     # if not b1s:
     #     if r_grp_2: 
     #         return []
@@ -270,9 +285,13 @@ def red_isomorphic(m1, m2, r_grp_1, r_grp_2):
     #         b1s = [[]]
     res = []
     conn_b1s = []
-    for b1 in b1s:
-        if connected(mols[m1-1], r_grp_1+b1):
-            conn_b1s.append(b1)
+    try:
+        for b1 in b1s:
+            if connected(mols[m1-1], r_grp_1+b1):
+                conn_b1s.append(b1)
+    except AssertionError:
+        print(m1, m2, "assert error")
+        raise
     conn_b2s = []
     for b2 in b2s:
         if connected(mols[m2-1], b2+r_grp_2):
@@ -284,7 +303,7 @@ def red_isomorphic(m1, m2, r_grp_1, r_grp_2):
     return res
 
 
-def reds_isomorphic(m1, m2):
+def reds_isomorphic(m1, m2, rdkit=False):
     # if m1 == 57 and m2 == 59:
     #     breakpoint()
     # if name_group(m1)== 'G30' and name_group(m2) == 'G6':
@@ -295,12 +314,12 @@ def reds_isomorphic(m1, m2):
     r_grp_m1 = list_red_members(mols[m1-1])
     r_grp_m2 = list_red_members(mols[m2-1])
     parallel = []
-    if not r_grp_m1:
-        r_grp_m1 = [[]]
-    if not r_grp_m2:
-        r_grp_m2 = [[]]
+    # if rdkit and not r_grp_m1:
+    #     r_grp_m1 = [[]]
+    # if rdkit and not r_grp_m2:
+    #     r_grp_m2 = [[]]
     for r_grp_1, r_grp_2 in product(r_grp_m1, r_grp_m2):        
-        res = red_isomorphic(m1, m2, r_grp_1, r_grp_2)
+        res = red_isomorphic(m1, m2, r_grp_1, r_grp_2, rdkit=rdkit)
         if res:
             parallel.append(res)
     return parallel
@@ -588,7 +607,84 @@ def find_edge(graph, a, b, r_grp_a, r_grp_b):
             continue
         if graph[a][b][i]['r_grp_2'] != r_grp_b:
             continue            
-        return i          
+        return i      
+
+
+
+def guess_edge_conn(graph, conn, r_lookup):
+    num_tries = 100
+    for _ in range(num_tries):
+        edge_conn = []                
+        used_reds = defaultdict(set)
+        for a, b in conn:
+            if a.id > b.id:
+                continue
+            bad = True
+            e_inds = list(range(len(graph[a.val][b.val])))
+            random.shuffle(e_inds)
+            for i in e_inds:
+                red_j1 = graph[a.val][b.val][i]['r_grp_1']
+                red_j2 = graph[a.val][b.val][i]['r_grp_2']
+                assert tuple(red_j1) in set(tuple(x) for x in r_lookup[a.val].values())
+                assert tuple(red_j2) in set(tuple(x) for x in r_lookup[b.val].values())
+                if set(red_j1) & used_reds[a.id]:
+                    continue
+                if set(red_j2) & used_reds[b.id]:
+                    continue
+                bad = False
+                used_reds[a.id] |= set(red_j1)
+                used_reds[b.id] |= set(red_j2)
+                # print(f"{a.val}->{b.val}")
+                # print(f"used {used_reds[a]}")
+                edge_conn.append((a, b, i))
+                if b in a.children:
+                    ind = a.children.index(b)
+                    a.children[ind] = (b, i)
+                    assert b.parent == a
+                    if find_edge(graph, a.val, b.val, red_j1, red_j2) != i:
+                        breakpoint()
+                    b.parent = (a, find_edge(graph, b.val, a.val, red_j2, red_j1))
+                break
+            if bad:
+                break
+        if not bad:
+            break
+    if bad:
+        return None
+    return edge_conn       
+
+
+
+def verify_edge_conn(graph, conn, r_lookup):
+    edge_conn = []                
+    used_reds = defaultdict(set)
+    for a, b, i in conn:
+        if a.id > b.id:
+            continue
+        red_j1 = graph[a.val][b.val][i]['r_grp_1']
+        red_j2 = graph[a.val][b.val][i]['r_grp_2']
+        assert tuple(red_j1) in set(tuple(x) for x in r_lookup[a.val].values())
+        assert tuple(red_j2) in set(tuple(x) for x in r_lookup[b.val].values())
+        if set(red_j1) & used_reds[a.id]:
+            continue
+        if set(red_j2) & used_reds[b.id]:
+            continue
+        bad = False
+        used_reds[a.id] |= set(red_j1)
+        used_reds[b.id] |= set(red_j2)
+        # print(f"{a.val}->{b.val}")
+        # print(f"used {used_reds[a]}")
+        edge_conn.append((a, b, i))
+        if b in a.children:
+            ind = a.children.index(b)
+            a.children[ind] = (b, i)
+            assert b.parent == a
+            if find_edge(graph, a.val, b.val, red_j1, red_j2) != i:
+                breakpoint()
+            b.parent = (a, find_edge(graph, b.val, a.val, red_j2, red_j1))
+    return edge_conn
+ 
+
 
 
 def verify_walk(r_lookup, graph, walk):
@@ -620,47 +716,19 @@ def verify_walk(r_lookup, graph, walk):
             """            
             for a, b in conn:
                 if b.val not in graph[a.val]:
-                    raise KeyError(f"{a.val} {b.val} not connected")        
-        
-            num_tries = 100
-            for _ in range(num_tries):
-                edge_conn = []                
-                used_reds = defaultdict(set)
-                for a, b in conn:
-                    if a.id > b.id:
-                        continue
-                    bad = True
-                    e_inds = list(range(len(graph[a.val][b.val])))
-                    random.shuffle(e_inds)
-                    for i in e_inds:
-                        red_j1 = graph[a.val][b.val][i]['r_grp_1']
-                        red_j2 = graph[a.val][b.val][i]['r_grp_2']
-                        assert tuple(red_j1) in set(tuple(x) for x in r_lookup[a.val].values())
-                        assert tuple(red_j2) in set(tuple(x) for x in r_lookup[b.val].values())
-                        if set(red_j1) & used_reds[a.id]:
-                            continue
-                        if set(red_j2) & used_reds[b.id]:
-                            continue
-                        bad = False
-                        used_reds[a.id] |= set(red_j1)
-                        used_reds[b.id] |= set(red_j2)
-                        # print(f"{a.val}->{b.val}")
-                        # print(f"used {used_reds[a]}")
-                        edge_conn.append((a, b, i))
-                        if b in a.children:
-                            ind = a.children.index(b)
-                            a.children[ind] = (b, i)
-                            assert b.parent == a
-                            if find_edge(graph, a.val, b.val, red_j1, red_j2) != i:
-                                breakpoint()
-                            b.parent = (a, find_edge(graph, b.val, a.val, red_j2, red_j1))
-                        break
-                    if bad:
-                        break
-                if not bad:
-                    break
-            if bad:
-                raise RuntimeError(walk)               
+                    raise KeyError(f"{a.val} {b.val} not connected")                
+            
+            # edge_conn = guess_edge_conn(graph, conn[::-2], r_lookup)
+            # if edge_conn is None:
+            #     raise RuntimeError(walk)
+            """
+            TODO: instead, write code that tracks all possible connections, then prunes the isomorphic
+            copies at each step
+            """    
+            walk = [(str(a.id), str(b.id), a.val.split(':')[0], b.val.split(':')[0]) for (a,b) in conn]
+            chosen_edges = walk_enumerate_mols(walk, graph, mols)
+            conn = [(a,b,e) for (a,b), e in zip(conn, chosen_edges)]
+            edge_conn = verify_edge_conn(graph, conn, r_lookup)
         else: 
             raise NotImplementedError
     except Exception as e:        

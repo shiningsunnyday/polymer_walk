@@ -29,8 +29,8 @@ def walk_edge_weight(dag, graph, model, proc):
     for j in range(1, len(walk_order)):
         cur_node_ind = graph.index_lookup[walk_order[j%len(walk_order)].val]   
         # print(f"input state {get_repr(state)}, context {get_repr(context)}, t {t}")               
-        update, context = model(state, context, t)
-        state = state_to_probs(state+update)
+        update, context = model(state, context, t)                
+        state = state_to_probs(state+update, graph.adj[cur_node_ind])
         # print(f"post state {get_repr(state)}, context {get_repr(context)}, t {t}")  
         # dist = Categorical(state)
         # log_prob = dist.log_prob(cur_node_ind)
@@ -210,8 +210,7 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats, feat_
                     if p.requires_grad:
                         p.grad /= len(procs)
             opt_step_time = time.time()
-            if i == len(dags_copy_train)-1 or i % args.num_accumulation_steps == 0:                 
-                breakpoint()
+            if i == len(dags_copy_train)-1 or i % args.num_accumulation_steps == 0:                                 
                 opt.step()
             final_time = time.time()
             times.append([start_feat_time-start_time, start_pred_time-start_feat_time, loss_backward_time-start_pred_time, opt_step_time-loss_backward_time, final_time-opt_step_time])
@@ -418,7 +417,7 @@ def main(args):
     all_nodes = list(G.nodes())   
 
 
-    # run_tests(predefined_graph, all_nodes)
+    run_tests(graph, all_nodes)
  
     mols = load_mols(args.motifs_folder)
     red_grps = annotate_extra(mols, args.extra_label_path)    
@@ -512,7 +511,8 @@ def main(args):
     seen_dags = deepcopy(dags)
 
     # eval_trajs = [['L5', 'S21', 'L5'], ['L5', 'P3', 'L5'], ['L5', 'S20', 'L5'], ['L5', 'P11', 'L5']]
-    eval_trajs = []
+    eval_trajs = [['S32', 'L14', 'S32']]
+    # eval_trajs = []
     while len(novel) < args.num_generate_samples:
         print(f"add {new_novel} samples, now {len(novel)} novel samples")
         new_novel = 0
@@ -527,7 +527,7 @@ def main(args):
 
             if len(traj) > 1 and good:                    
                 name_traj = process_good_traj(traj, all_nodes)       
-                assert len(traj) == len(name_traj)
+                assert len(traj) == len(name_traj)                
                 try:        
                     root, edge_conn = verify_walk(r_lookup, predefined_graph, name_traj)
                     DiffusionGraph.value_count(root, {}) # modifies edge_conn with :'s too
@@ -550,7 +550,9 @@ def main(args):
                         # p (lambda W_adj,edge_conn,graph:[[a.id,a.val,b.id,b.val,e,W_adj[graph.index_lookup[a.val]][graph.index_lookup[b.val]].item(),W_adj[graph.index_lookup[b.val]][graph.index_lookup[a.val]].item()] for (a,b,e) in edge_conn])(W_adj,edge_conn,graph)                            
                     else:
                         print(f"{name_traj} discovered")
-                except:
+                except Exception as e:
+                    print(e)
+                    breakpoint()
                     pass
             
     orig_preds = []   
@@ -692,10 +694,14 @@ def run_tests(graph, all_nodes)                :
     # verify_walk(r_lookup, graph, ['L3','S32','S20[->P14->P39,->S18]','S32'])
     
     # test process_good_traj
-    name_traj = process_good_traj(['61','90','50[->39,->39]','90'], all_nodes)    
+    name_traj = process_good_traj(['62','92','50[->39,->39]','92'], all_nodes)    
     assert name_traj == ['L3','S32','S20[->S1,->S1]','S32']
-    name_traj = process_good_traj(['61','90','50[->12->37,->48]','90'], all_nodes)
+    name_traj = process_good_traj(['62','92','50[->12->37,->48]','92'], all_nodes)
     assert name_traj == ['L3','S32','S20[->P14->P39,->S18]','S32']
+
+    # test edge-connection guessing
+    # verify_walk(r_lookup, graph.graph, ['S7','S3','S7'])
+    verify_walk(r_lookup, graph.graph, ['S32','L14','S32'])
 
 
 

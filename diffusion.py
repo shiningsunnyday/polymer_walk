@@ -198,12 +198,14 @@ class DiffusionGraph:
 
         # account for all non-single-node dags
         self.index_lookup = self.modify_graph(dags, graph)        
+      
 
         for dag in dags:
             if dag.id:
                 breakpoint()
             self.processes.append(DiffusionProcess(dag, self.index_lookup, **diffusion_args))
         self.graph = graph
+        self.adj = nx.adjacency_matrix(graph).toarray()
 
 
     def lookup_process(self, dag_id):
@@ -484,8 +486,13 @@ class Predictor(nn.Module):
         return torch.cat(props, dim=-1)
     
 
-def state_to_probs(state):
+def state_to_probs(state, adj=None):
     state = torch.where(state>=0., state, 0.0)
+    if adj is not None:
+        try:
+            state[:, adj==0.] = 0.
+        except:
+            breakpoint()
     if state.sum(axis=-1):
         # return F.softmax(state)
         return state/state.sum(axis=-1)
@@ -731,7 +738,8 @@ def sample_walk(n, G, graph, model, all_nodes):
     start = graph.index_lookup[n]
     state = torch.zeros((1, len(G)), dtype=torch.float64)
     state[0, graph.index_lookup[n]] = 1.
-    traj = [str(start)]    
+    traj = [str(start)]
+    cur_node_ind = start    
     t = 0
     after = -1
     good = False   
@@ -740,10 +748,11 @@ def sample_walk(n, G, graph, model, all_nodes):
         update, context = model(state, context, t)
         if not (state>=0).all():
             breakpoint()
-        state = state_to_probs(state+update)
+        state = state_to_probs(state+update, graph.adj[cur_node_ind])
         t += 1
         state_numpy = state.detach().flatten().numpy()
         after = np.random.choice(len(state_numpy), p=state_numpy)        
+        cur_node_ind = after
         # try:
         #     print(f"post state {get_repr(state)}, context {get_repr(context)}, t {t}")
         #     print(f"sampled {after} with prob {state_numpy[after]}")
@@ -804,7 +813,6 @@ def main(args):
     mols = load_mols(args.motifs_folder)
     red_grps = annotate_extra(mols, args.extra_label_path)  
     r_lookup = r_member_lookup(mols)
-
     num_nodes = len(graph.nodes())
     index_lookup = dict(zip(graph.nodes(), range(num_nodes)))
     data = pickle.load(open(args.dags_file, 'rb'))
