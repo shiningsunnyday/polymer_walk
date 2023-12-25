@@ -12,12 +12,12 @@ if __name__ == "__main__":
         for predictor_log in os.listdir(os.path.join(work_dir, folder)):
             if predictor_log[:9] == 'predictor':
                 bad = True
-                for f in os.listdir(os.path.join(folder, predictor_log)):
+                for f in os.listdir(os.path.join(work_dir, folder, predictor_log)):
                     if f.endswith('.png'):
                         bad = False
                 if bad: 
-                    shutil.rmtree(os.path.join(folder, predictor_log))            
+                    shutil.rmtree(os.path.join(work_dir, folder, predictor_log))            
             if not predictor_log.endswith('.png'): continue
             no_plot = False
         if no_plot:
-            shutil.rmtree(folder)
+            shutil.rmtree(os.path.join(work_dir, folder))
