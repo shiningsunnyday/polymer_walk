@@ -62,8 +62,10 @@ if __name__ == "__main__":
             name = l.split()[0]
             l = l[l.find(' ')+1:]
             walk = l.rstrip('\n').split(' ')[0]
-            if args.extract_edges: grps = chain_extract(walk, graph)                
-            else: grps = extract_chain(walk)
+            if args.extract_edges: 
+                grps = chain_extract(walk, graph)                
+            else: 
+                grps = extract_chain(walk)
             # print(f"walk: {walk}, grps: {grps}")
             try:
                 root, conn = verify_walk(r_lookup, graph, grps)
@@ -71,7 +73,7 @@ if __name__ == "__main__":
                     os.makedirs(args.save_edges_dir, exist_ok=True)
                     save_file = os.path.join(args.save_edges_dir, f'{name}.edgelist')
                     if save_file in files:
-                        breakpoint()                    
+                        breakpoint()     
                     nx.write_edgelist(grps, save_file, data=True)                
                     files.add(save_file)
             except Exception as e:
@@ -143,7 +145,7 @@ if __name__ == "__main__":
                           
 
     if args.out_path:
-        # breakpoint()
+        breakpoint()
         print(f"processed {len(dags)}/{len(lines)} dags")
         pickle.dump(dags, open(args.out_path, 'wb+'))
         # breakpoint()
