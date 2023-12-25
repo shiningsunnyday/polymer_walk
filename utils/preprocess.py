@@ -32,42 +32,93 @@ def load_mols(folder):
             mols.append(mol)
             for i, a in enumerate(mol.GetAtoms()): 
                 a.SetProp("molAtomMapNumber", str(i+1))
-        # these are the ones chem3d gets wrong
-        # if f == '15.mol':
-        #     mol = Chem.MolFromSmiles('CC1=CC(C)=CC=C1C')            
+        # if 'group-contrib' in folder:
+        #     index = int(f.split('.mol')[0])-1
+        #     if 0 <= index and index <= 40:
+        #         smiles = [
+        #             'CC(C)(C)C',
+        #             'CC1=CC(C)=CC(C)=C1C',
+        #             'CC1=CC=C(C)C=C1',
+        #             'O=C(OC)OC',
+        #             'CS(C)(=O)=O',
+        #             'COC',
+        #             'ClC1=CC=CC=C1',
+        #             'CBr',
+        #             'CC(C(F)(F)F)(C(F)(F)F)C',
+        #             'CC(F)(F)F',
+        #             'CC1=C(C)C=C(C)C=C1C',
+        #             'CCC',
+        #             'CC1=CC2=CC=C(C)C=C2C=C1',
+        #             'CC(C)=O',
+        #             'CC1=CC(C)=CC=C1C',
+        #             'O=C1C2=CC(C(N(C)C3=O)=O)=C3C=C2C(N1C)=O',
+        #             'CC',
+        #             'C/C(C)=C(C)/C',
+        #             'CCl',
+        #             'CC(OC)=O',
+        #             'CC1(C)C2=C(C=CC(C)=C2)[C@@]3(C1)C4=CC(C)=CC=C4C(C)(C)C3',
+        #             'CC1=CC(C(N(C)C2=O)=O)=C2C=C1',
+        #             'CC1=CC(C(C2=C3C=CC(C)=C2)=O)=C3C=C1',
+        #             'CC1(C)[C@H]2CC[C@H](C2)C1',
+        #             'CC1(C)CCCCC1',
+        #             'CSC',
+        #             'CC1=CC=CC=C1',
+        #             'CO',
+        #             'CC(C)C',
+        #             'CC(C)(C)C',
+        #             'O=C1OC(C)(C)C2=CC=CC=C21',
+        #             'CC1(C)C2=C(C=CC=C2)C3=CC=CC=C31',
+        #             'O=C1C2=CC=CC=C2C(C)(C)C3=C1C=CC=C3',
+        #             'CC(C)(C)C',
+        #             'CC1=CC(C)=CC=C1',
+        #             'CC1=CC(C)=CC(C)=C1',
+        #             'CC1=CC=C2C(CC3=C2C=CC(C)=C3)=C1',
+        #             'CC(NC)=O',
+        #             'CN',
+        #             'C',
+        #             'O=C1C2=CC=C(C)C=C2C3=NC4=C(C=CC(C)=C4)N13'
+        #         ]
+        #         mol = Chem.MolFromSmiles(smiles[index])
+        #         for i, a in enumerate(mol.GetAtoms()): 
+        #             a.SetProp("molAtomMapNumber", str(i+1))                
+        #         Chem.rdmolfiles.MolToMolFile(mol, f'data/datasets/group-contrib/all_groups/{index+1}.mol')                
+        #         mols[-1] = mol
+
+        # if 'group-contrib' in folder and f == '47.mol':
+        #     wrong_inds = [13,14,15,16]
+        #     right_inds = [16,15,14,13]
+        #     inds = list(range(mols[-1].GetNumAtoms()))
+        #     for w, r in zip(wrong_inds, right_inds):
+        #         inds[w] = r
+        #     mol = Chem.RenumberAtoms(mols[-1], inds)
         #     for i, a in enumerate(mol.GetAtoms()): 
-        #         a.SetProp("molAtomMapNumber", str(i+1))            
-        #     Chem.rdmolfiles.MolToMolFile(mol, 'data/datasets/group-contrib/all_groups/15.mol')
-        if 'group-contrib' in folder and f == '18.mol':
-            mol = Chem.MolFromSmiles('C/C(C)=C(C)/C')
-            for i, a in enumerate(mol.GetAtoms()): 
-                a.SetProp("molAtomMapNumber", str(i+1))            
-            Chem.rdmolfiles.MolToMolFile(mol, 'data/datasets/group-contrib/all_groups/18.mol')
-            mols[-1] = mol
-        if 'group-contrib' in folder and f == '3.mol':
-            mol = Chem.MolFromSmiles('CC1=CC=C(C)C=C1')
-            for i, a in enumerate(mol.GetAtoms()): 
-                a.SetProp("molAtomMapNumber", str(i+1))            
-            Chem.rdmolfiles.MolToMolFile(mol, 'data/datasets/group-contrib/all_groups/3.mol')
-            mols[-1] = mol   
-        if 'group-contrib' in folder and f == '11.mol':
-            mol = Chem.MolFromSmiles('CC1=C(C)C=C(C)C=C1C')
-            for i, a in enumerate(mol.GetAtoms()): 
-                a.SetProp("molAtomMapNumber", str(i+1))            
-            Chem.rdmolfiles.MolToMolFile(mol, 'data/datasets/group-contrib/all_groups/11.mol')
-            mols[-1] = mol    
-        if 'group-contrib' in folder and f == '13.mol':
-            mol = Chem.MolFromSmiles('CC1=CC2=CC=C(C)C=C2C=C1')
-            for i, a in enumerate(mol.GetAtoms()): 
-                a.SetProp("molAtomMapNumber", str(i+1))            
-            Chem.rdmolfiles.MolToMolFile(mol, 'data/datasets/group-contrib/all_groups/11.mol')
-            mols[-1] = mol       
-        if 'group-contrib' in folder and f == '14.mol':
-            mol = Chem.MolFromSmiles('CC(C)=O')
-            for i, a in enumerate(mol.GetAtoms()): 
-                a.SetProp("molAtomMapNumber", str(i+1))            
-            Chem.rdmolfiles.MolToMolFile(mol, 'data/datasets/group-contrib/all_groups/14.mol')
-            mols[-1] = mol     
+        #         a.SetProp("molAtomMapNumber", str(i+1))                
+        #     Chem.rdmolfiles.MolToMolFile(mol, 'data/datasets/group-contrib/all_groups/47.mol')
+        #     breakpoint()
+        #     mols[-1] = mol
+        # if 'group-contrib' in folder and f == '65.mol':
+        #     wrong_inds = [13,14,15,16]
+        #     right_inds = [16,15,14,13]
+        #     inds = list(range(mols[-1].GetNumAtoms()))
+        #     for w, r in zip(wrong_inds, right_inds):
+        #         inds[w] = r
+        #     mol = Chem.RenumberAtoms(mols[-1], inds)
+        #     for i, a in enumerate(mol.GetAtoms()): 
+        #         a.SetProp("molAtomMapNumber", str(i+1))                
+        #     Chem.rdmolfiles.MolToMolFile(mol, 'data/datasets/group-contrib/all_groups/65.mol')
+        #     breakpoint()
+        #     mols[-1] = mol        
+        # if 'group-contrib' in folder and f == '66.mol':
+        #     wrong_inds = [13,14,15,16]
+        #     right_inds = [16,15,14,13]
+        #     inds = list(range(mols[-1].GetNumAtoms()))
+        #     for w, r in zip(wrong_inds, right_inds):
+        #         inds[w] = r
+        #     mol = Chem.RenumberAtoms(mols[-1], inds)
+        #     for i, a in enumerate(mol.GetAtoms()): 
+        #         a.SetProp("molAtomMapNumber", str(i+1))                
+        #     Chem.rdmolfiles.MolToMolFile(mol, 'data/datasets/group-contrib/all_groups/66.mol')
+        #     breakpoint()                  
         # if 'permeability' in folder and f == '57.mol':
         #     wrong_inds = [8, 7]
         #     right_inds = [7, 8]
@@ -161,43 +212,8 @@ def load_mols(folder):
         #         a.SetProp("molAtomMapNumber", str(i+1))                
         #     Chem.rdmolfiles.MolToMolFile(mol, 'data/datasets/datasetA_permeability/all_groups/396.mol')
         #     mols[-1] = mol
-        #     breakpoint()        
-        # if f == '47.mol':
-        #     wrong_inds = [13,14,15,16]
-        #     right_inds = [16,15,14,13]
-        #     inds = list(range(mols[-1].GetNumAtoms()))
-        #     for w, r in zip(wrong_inds, right_inds):
-        #         inds[w] = r
-        #     mol = Chem.RenumberAtoms(mols[-1], inds)
-        #     for i, a in enumerate(mol.GetAtoms()): 
-        #         a.SetProp("molAtomMapNumber", str(i+1))                
-        #     Chem.rdmolfiles.MolToMolFile(mol, 'data/datasets/group-contrib/all_groups/47.mol')
-        #     breakpoint()
-        #     mols[-1] = mol
+        #     breakpoint()              
 
-        # if f == '65.mol':
-        #     wrong_inds = [13,14,15,16]
-        #     right_inds = [16,15,14,13]
-        #     inds = list(range(mols[-1].GetNumAtoms()))
-        #     for w, r in zip(wrong_inds, right_inds):
-        #         inds[w] = r
-        #     mol = Chem.RenumberAtoms(mols[-1], inds)
-        #     for i, a in enumerate(mol.GetAtoms()): 
-        #         a.SetProp("molAtomMapNumber", str(i+1))                
-        #     Chem.rdmolfiles.MolToMolFile(mol, 'data/datasets/group-contrib/all_groups/65.mol')
-        #     breakpoint()
-        #     mols[-1] = mol        
-        # if f == '66.mol':
-        #     wrong_inds = [13,14,15,16]
-        #     right_inds = [16,15,14,13]
-        #     inds = list(range(mols[-1].GetNumAtoms()))
-        #     for w, r in zip(wrong_inds, right_inds):
-        #         inds[w] = r
-        #     mol = Chem.RenumberAtoms(mols[-1], inds)
-        #     for i, a in enumerate(mol.GetAtoms()): 
-        #         a.SetProp("molAtomMapNumber", str(i+1))                
-        #     Chem.rdmolfiles.MolToMolFile(mol, 'data/datasets/group-contrib/all_groups/66.mol')
-        #     breakpoint()        
     return mols
 
 
@@ -259,8 +275,8 @@ def annotate_extra(mols, path):
                 labels.append((int(label), red_grp.rstrip('\n')))
 
     print(len(mols), len(all_labels))
+    breakpoint()
     if volumes: assert len(volumes) == len(mols)
-
     for i in range(len(all_labels)):
         m = mols[i]
         if volumes: m.GetConformer().SetProp('V', volumes[i])
