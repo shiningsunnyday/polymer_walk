@@ -37,7 +37,6 @@ class DiffusionProcess:
         self.total = np.prod([factorial(x) for x in self.child_nums])        
         self.split = split
         self.reset()
-
         if self.split:
             res = []
             self.dfs_walk(dag, res)
@@ -49,15 +48,26 @@ class DiffusionProcess:
             self.dfs_seed = dfs_seed % self.total # 0 to X-1, where X := prod_(node in main chain) num_childs(node)            
             res = self.compute_dfs(dag)
             new_res = self.augment_walk_order(res, dfs_seed)
+            if dfs_seed == 0:
+                assert res == new_res
             self.dfs_order = new_res
             self.num_nodes = len(res)
 
 
 
     def augment_walk_order(self, res, dfs_seed):
-        # dfs_seed // self.total is which node to start in main chain
+        """
+        We want to augment vanilla dfs order "res" with dfs_seed
+        dfs_seed // self.total is which node to start in main chain
+        dfs_dir is the direction to travel
+        
+        1) Fill indices with the corresponding indices of res
+        belonging to main chain.
+        2) For each consecutive main chain nodes a and b, flip the order
+        of res between a and b if dfs_dir
+        """
         indices = []
-        i = 0
+        i = 0        
         for j in range(len(res)):
             if res[j] == self.main_chain[i]:
                 indices.append(j)
@@ -71,11 +81,11 @@ class DiffusionProcess:
             else:
                 start = (start_node-step-1+len(indices))%len(indices)
                 end = (start_node-step+len(indices))%len(indices)            
-            if indices[end] < indices[start]:
+            # we might loop back
+            if indices[end] <= indices[start]:
                 new_res += (res[indices[start]:] + res[:indices[end]])
             else:
                 new_res += res[indices[start]: indices[end]]
-
         return new_res
 
 
@@ -97,17 +107,53 @@ class DiffusionProcess:
     def side_childs(a):
         return [x for x in a.children if x[0].side_chain]        
     
+    @staticmethod
+    def impose_order(cur, add_main=False):
+        for j, c in enumerate(cur.children):
+            cur.children[j][0].side_chain = True               
+        if add_main and len(cur.children):
+            lowest_index_i = 0
+            for j, c in enumerate(cur.children):
+                if c[0].id < cur.children[lowest_index_i][0].id:
+                    lowest_index_i = j     
+            cur.children[lowest_index_i][0].side_chain = False
+            DiffusionProcess.impose_order(cur.children[lowest_index_i][0], True)
+        else:
+            lowest_index_i = -1
+        # make the rest side chain
+        for j, c in enumerate(cur.children):
+            if j != lowest_index_i:
+                DiffusionProcess.impose_order(cur.children[j][0], False)            
 
     @staticmethod
     def compute_main_chain(dag):
+        """
+        we linearize a dag by canonicalizing the descendents
+        for Group Contribution, this is done already because of .side_chain during construction
+        for other datasets, we need to impose an ordering
+        by default, just use the id
+        """     
+        dfs_order = []        
+        need_impose = False
+        DiffusionProcess.dfs_walk(dag, dfs_order)
+        for cur in dfs_order:
+            num_main_childs = sum([not c[0].side_chain for c in cur.children])
+            if num_main_childs > 1:
+                need_impose = True
+        if need_impose:
+            DiffusionProcess.impose_order(dag, True)
+        
         chain = [dag]
         i = 0
         while len(chain) == 1 or chain[-1].id:
-            i += 1
-            main_chain_child = False
+            i += 1        
+            num_main_childs = sum([not c[0].side_chain for c in chain[-1].children])
+            assert num_main_childs <= 1
+            main_chain_child = False            
             for c in chain[-1].children:
                 if not c[0].side_chain:
                     main_chain_child = True
+            
             if main_chain_child: # exists main chain child
                 for child, _ in chain[-1].children:
                     if child.side_chain: continue
@@ -136,7 +182,10 @@ class DiffusionProcess:
             side_chain = c[0].side_chain
             ind = len(res)-1
             if c[0].id:
-                DiffusionProcess.dfs_walk(c[0], res, perm_map)
+                try:
+                    DiffusionProcess.dfs_walk(c[0], res, perm_map)
+                except:
+                    breakpoint()
                 if side_chain:
                     for i in range(len(res)-2, ind-1, -1):
                         res.append(res[i])
@@ -197,9 +246,7 @@ class DiffusionGraph:
         self.processes = []
 
         # account for all non-single-node dags
-        self.index_lookup = self.modify_graph(dags, graph)        
-      
-
+        self.index_lookup = self.modify_graph(dags, graph)              
         for dag in dags:
             if dag.id:
                 breakpoint()
@@ -361,8 +408,10 @@ class Predictor(nn.Module):
                     mlp_in = nn.Sequential(lin_out_1, act, dropout, lin_out_2)
                 else:
                     mlp_in = nn.Sequential(lin_out_1, act, lin_out_2)
-                # nn.init.zeros_(lin_out.weight)
-                # nn.init.zeros_(lin_out.bias)
+                nn.init.zeros_(lin_out_1.weight)
+                nn.init.zeros_(lin_out_1.bias)
+                nn.init.zeros_(lin_out_2.weight)
+                nn.init.zeros_(lin_out_2.bias)                
                 layer_name = f"in_mlp" if share_params else f"in_mlp_{i}"
                 setattr(self, layer_name, mlp_in)
 
@@ -378,8 +427,10 @@ class Predictor(nn.Module):
                     mlp_out = nn.Sequential(lin_out_1, act, dropout, lin_out_2)
                 else:
                     mlp_out = nn.Sequential(lin_out_1, act, lin_out_2)
-                # nn.init.zeros_(lin_out.weight)
-                # nn.init.zeros_(lin_out.bias)
+                nn.init.zeros_(lin_out_1.weight)
+                nn.init.zeros_(lin_out_1.bias)
+                nn.init.zeros_(lin_out_2.weight)
+                nn.init.zeros_(lin_out_2.bias)  
                 layer_name = f"mlp_out" if share_params else f"mlp_out_{i}"
                 setattr(self, layer_name, mlp_out)
 
@@ -395,10 +446,10 @@ class Predictor(nn.Module):
                             input_dim = hidden_dim     
                         lin_i_1 = nn.Linear(input_dim, hidden_dim)
                         lin_i_2 = nn.Linear(hidden_dim, hidden_dim)                        
-                        # nn.init.zeros_(lin_i_1.weight)
-                        # nn.init.zeros_(lin_i_2.weight)
-                        # nn.init.zeros_(lin_i_1.bias)
-                        # nn.init.zeros_(lin_i_2.bias)                                    
+                        nn.init.zeros_(lin_i_1.weight)
+                        nn.init.zeros_(lin_i_2.weight)
+                        nn.init.zeros_(lin_i_1.bias)
+                        nn.init.zeros_(lin_i_2.bias)                                    
                         # setattr(self, f"gnn_{i}", GATConv(in_channels=-1, out_channels=hidden_dim, edge_dim=1))
                         if self.dropout_rate:
                             dropout = nn.Dropout(self.dropout_rate)
@@ -426,13 +477,18 @@ class Predictor(nn.Module):
                 mlp_out = nn.Sequential(lin_out_1, act, dropout, lin_out_2)
             else:
                 mlp_out = nn.Sequential(lin_out_1, act, lin_out_2)
-            # nn.init.zeros_(lin_out.weight)
-            # nn.init.zeros_(lin_out.bias)
+            nn.init.zeros_(lin_out_1.weight)
+            nn.init.zeros_(lin_out_1.bias)
+            nn.init.zeros_(lin_out_2.weight)
+            nn.init.zeros_(lin_out_2.bias)  
             setattr(self, f"out_mlp_{i}", mlp_out)
         
         
 
-    def forward(self, X, edge_index, edge_weights):     
+    def forward(self, X, edge_index, edge_weights):  
+        node_mask = torch.zeros((X.shape[0],))==1
+        # node_mask = torch.ones((X.shape[0], 1))
+        node_mask[edge_index.flatten()] = True
         if self.gnn == 'gin':
             head_outs = []
             for j in range(1, self.num_heads+1):
@@ -450,14 +506,14 @@ class Predictor(nn.Module):
                 X = head_outs[0]
                 if self.do_mlp_out:
                     X = getattr(self, "mlp_out")(X)
-                props = [getattr(self, f"out_mlp_{i}")(X.sum(axis=0)) for i in range(1,self.num_heads+1)] 
+                props = [getattr(self, f"out_mlp_{i}")((X[node_mask]).mean(axis=0)) for i in range(1,self.num_heads+1)] 
             else:
                 assert len(head_outs) == self.num_heads
                 props = []                
                 for i in range(1,self.num_heads+1):
                     if self.do_mlp_out:
                         head_outs[i-1] = getattr(self, f"mlp_out_{i}")(head_outs[i-1])
-                    props.append(getattr(self, f"out_mlp_{i}")(head_outs[i-1].sum(axis=0)))
+                    props.append(getattr(self, f"out_mlp_{i}")((head_outs[i-1][node_mask]).mean(axis=0)))
         elif self.gnn in ['gat', 'gcn']:
             if self.share_params:
                 if self.in_mlp:
@@ -466,7 +522,7 @@ class Predictor(nn.Module):
                 X = getattr(self, f"gnn_conv")(X, edge_index, edge_weight=(edge_weights if self.edge_weights else None))
                 if self.do_mlp_out:
                     X = getattr(self, "mlp_out")(X)                
-                props = [getattr(self, f"out_mlp_{i}")(X.sum(axis=0)) for i in range(1,self.num_heads+1)]
+                props = [getattr(self, f"out_mlp_{i}")((X[node_mask]).mean(axis=0)) for i in range(1,self.num_heads+1)]
             else:
                 head_outs = []
                 for j in range(1, self.num_heads+1):   
@@ -479,7 +535,7 @@ class Predictor(nn.Module):
                 for i in range(1,self.num_heads+1):
                     if self.do_mlp_out:
                         head_outs[i-1] = getattr(self, f"mlp_out_{i}")(head_outs[i-1])
-                    props.append(getattr(self, f"out_mlp_{i}")(head_outs[i-1].sum(axis=0)))
+                    props.append(getattr(self, f"out_mlp_{i}")((head_outs[i-1][node_mask]).mean(axis=0)))
         else:
             raise
         
@@ -489,16 +545,16 @@ class Predictor(nn.Module):
 def state_to_probs(state, adj=None):
     state = torch.where(state>=0., state, 0.0)
     if adj is not None:
-        try:
-            state[:, adj==0.] = 0.
-        except:
-            breakpoint()
-    if state.sum(axis=-1):
+        state[:, adj==0.] = 0.
+    if state.sum(axis=-1) > 0:
         # return F.softmax(state)
         return state/state.sum(axis=-1)
     else:
-        breakpoint()
-        return state
+        if adj is not None:
+            state[:, adj!=0.] = 1.
+            return state/state.sum(axis=-1)
+        else:
+            breakpoint()
     state = state - state.min(-1, True).values
     return state/state.sum(axis=-1)
 

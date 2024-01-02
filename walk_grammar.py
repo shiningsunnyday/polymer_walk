@@ -148,20 +148,22 @@ def run_checks(rdkit=False):
 def check_walks(walk_folder):
     if 'group-contrib' in walk_folder:
         raise NotImplementedError        
-    
     bad_set = set()
     if walk_folder:
         # if walks are 0.edgelist, 1.edgelist, 2.edgelist, etc.
-        lines = sorted(os.listdir(walk_folder), key=lambda f: int(''.join(list(filter(lambda x: x.isdigit(), f)))))            
+        lines = sorted(os.listdir(walk_folder), key=lambda f: int(''.join(list(filter(lambda x: x.isdigit(), f)))))
         for f in lines:
             G = nx.read_edgelist(os.path.join(walk_folder, f), create_using=nx.MultiDiGraph)
             if len(G.nodes()) < 2:
                 continue
             for e in G.edges:
-                check = (e[0].split(':')[0], e[1].split(':')[0])
-                if not reds_isomorphic(*[name_to_id[c] for c in check]):                                    
-                    bad_set.add(f)   
-    return bad_set 
+                check = (e[0].split(':')[0], e[1].split(':')[0])      
+                try:
+                    if not reds_isomorphic(*[name_to_id[c] for c in check], rdkit=True):
+                        bad_set.add((f, check, 'not isomorphic'))
+                except Exception as e:
+                    bad_set.add((f, check, e))
+    return bad_set
 
 
 def main(args):
@@ -172,9 +174,9 @@ def main(args):
     # for i in range(41):
     #     G.add_node(name_group(i+1))
     os.makedirs(os.path.join(args.motifs_folder, f'with_label/'), exist_ok=True)
-    for i, mol in enumerate(mols):
-        Draw.MolToFile(mol, os.path.join(args.motifs_folder, f'with_label/{i+1}.png'), size=(1000, 1000))
-        Draw.MolToFile(mol, os.path.join(args.motifs_folder, f'with_label/{name_group(i+1)}.png'), size=(1000, 1000))
+    # for i, mol in enumerate(mols):
+    #     Draw.MolToFile(mol, os.path.join(args.motifs_folder, f'with_label/{i+1}.png'), size=(1000, 1000))
+    #     Draw.MolToFile(mol, os.path.join(args.motifs_folder, f'with_label/{name_group(i+1)}.png'), size=(1000, 1000))
 
 
     rdkit = 'group-contrib' not in args.motifs_folder
@@ -183,11 +185,13 @@ def main(args):
         if 'group-contrib' not in args.walks_folder:
             bad_set = check_walks(args.walks_folder)
             if bad_set:
-                breakpoint()            
+                print(sorted(list(bad_set), key=lambda x:int(x[0].split('.')[0].split('_')[1])))
+                breakpoint()
     
-    bad_checks = run_checks(rdkit)
-    if bad_checks:
-        breakpoint()
+    if 'group-contrib' in args.walks_folder:
+        bad_checks = run_checks(rdkit)
+        if bad_checks:
+            breakpoint()
 
 
     with Pool(100) as p:    

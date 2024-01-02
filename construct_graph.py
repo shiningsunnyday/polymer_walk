@@ -97,7 +97,7 @@ if __name__ == "__main__":
                 print(f"{f} has cycle")
             try:
                 root, conn = bfs_traverse(G, graph)
-            except (KeyError, RuntimeError) as e:
+            except Exception as e:
                 breakpoint()
                 root, conn = bfs_traverse(G, graph)
                 if type(e) == KeyError:

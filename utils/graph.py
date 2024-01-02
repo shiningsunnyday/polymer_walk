@@ -3,6 +3,7 @@ import numpy as np
 from itertools import product, permutations
 import random
 import networkx as nx
+from networkx.algorithms.isomorphism import GraphMatcher
 import sys
 from copy import deepcopy
 sys.path.append('/home/msun415/my_data_efficient_grammar/')
@@ -13,8 +14,13 @@ sys.path.append('/home/msun415/3D-motif-grammar/src')
 sys.path.append('/home/msun415/3D-motif-grammar')
 from walk import walk_enumerate_mols
 
-mols = load_mols('data/datasets/group-contrib/all_groups')
-annotate_extra(mols, 'data/datasets/group-contrib/all_groups/all_extra.txt')
+"""FOR GROUP CONTRIBUTION"""
+# mols = load_mols('data/datasets/group-contrib/all_groups')
+# annotate_extra(mols, 'data/datasets/group-contrib/all_groups/all_extra.txt')
+
+"""FOR CROW"""
+# mols = load_mols('data/datasets/crow/all_groups')
+# annotate_extra(mols, 'data/datasets/crow/all_groups/all_extra.txt')
 
 # mols = load_mols('data/datasets/pu_groups/all_groups')
 # annotate_extra(mols, 'data/datasets/pu_groups/all_groups/all_extra.txt')
@@ -23,8 +29,8 @@ annotate_extra(mols, 'data/datasets/group-contrib/all_groups/all_extra.txt')
 # annotate_extra(mols, 'data/datasets/lipophilicity/all_groups/all_extra.txt')
 
 """FOR PERMEABILITY"""
-# mols = load_mols('data/datasets/datasetA_permeability/all_groups')
-# annotate_extra(mols, 'data/datasets/datasetA_permeability/all_groups/all_extra.txt')
+mols = load_mols('data/datasets/datasetA_permeability/all_groups')
+annotate_extra(mols, 'data/datasets/datasetA_permeability/all_groups/all_extra.txt')
 
 class Node:
     def __init__(self, parent, children, val, id, side_chain=False):        
@@ -94,7 +100,9 @@ def connected(mol, inds):
     return sum(vis) == len(inds)
 
 
-def mol_to_graph(mol, inds, r=False):
+def mol_to_graph(mol, inds=[], r=False):
+    if not inds:
+        inds = list(range(mol.GetNumAtoms()))
     graph = nx.Graph()
     for i, ind in enumerate(inds):
         a = mol.GetAtomWithIdx(ind)
@@ -224,7 +232,6 @@ def __extract_subgraph(mol, selected_atoms):
 def extract_subgraph(mol, selected_atoms): 
     subgraph_mapped, roots = __extract_subgraph(mol, selected_atoms) 
     subgraph = Chem.MolToSmiles(subgraph_mapped)
-    assert '.' not in subgraph
     subgraph = Chem.MolFromSmiles(subgraph)
     if subgraph is not None:
         return subgraph, subgraph_mapped, roots
@@ -241,6 +248,8 @@ def substruct_matches(mol, subgraph):
         # res = list(map(list, mol_copy.GetSubstructMatches(subgraph)))
         suppl = Chem.ResonanceMolSupplier(mol_copy, Chem.KEKULE_ALL)
         for supp in suppl:
+            if supp is None:
+                breakpoint()
             res += list(map(list, supp.GetSubstructMatches(subgraph)))
     return res
     
@@ -250,11 +259,62 @@ def find_isomorphic(mol1, mol2, r_grp_1, rdkit=False):
     if rdkit:
         mapped_subgraph = extract_subgraph(mol1, r_grp_1)[1]  
         b2s_new = substruct_matches(mol2, mapped_subgraph)
-        for ring in b2s_new:
-            for i in range(len(ring)):
-                b2s.append(list(ring[i:]+ring[:i]))
-                # b2s.append(list(reversed(b2s[-1])))
-        return b2s
+        """
+        to facilitate the guessing, we can pick any subset of rings in b2
+        and reverse them
+        """
+        # length = len(b2s_new)        
+        # for i in range(length):
+        #     b2 = b2s_new[i]
+        #     ring_atoms = [r for ring in mol2.GetRingInfo().AtomRings() for r in ring]
+        #     b2_index = [i for i in range(len(b2)) if b2[i] not in ring_atoms]
+        #     if len(b2_index) > 4:
+        #         continue
+        #     for permute_nong_ring in permutations(b2_index):
+        #         permute_nong_ring = list(permute_nong_ring)
+        #         b2_permute = np.array(deepcopy(b2))
+        #         b2_permute[permute_nong_ring] = b2_permute[b2_index]
+        #         b2s_new.append(b2_permute.tolist())            
+        # length = len(b2s_new) 
+        # for i in range(length):
+        #     b2 = b2s_new[i]
+        #     b2_indices = []
+        #     for ring in mol2.GetRingInfo().AtomRings():
+        #         try:
+        #             b2_index = [b2.index(r) for r in ring]
+        #             b2_indices.append(b2_index)
+        #         except:
+        #             continue
+        #     for j in range(1, 2**len(b2_indices)):
+        #         mask = list(map(bool, map(int, format(j,'b'))))
+        #         mask = [0 for _ in range(len(b2_indices)-len(mask))] + mask
+        #         b2_copy = np.array(deepcopy(b2))
+        #         for b2_index in np.array(b2_indices)[mask].tolist():
+        #             stuff = b2_copy[sorted(b2_index)]
+        #             stuff = list(reversed(stuff[1:].tolist()+stuff[:1].tolist())) # go in opposite direction
+        #             b2_copy[sorted(b2_index)] = stuff 
+        #             b2s_new.append(b2_copy.tolist())        
+        # for b2 in b2s_new:
+        #     # if len(b2) <= 8:
+        #     #     b2s += [list(x) for x in permutations(b2)]
+        #     # else:
+        #     for i in range(len(b2)):
+        #         b2s.append(list(b2[i:]+b2[:i]))
+        #         b2s.append(list(reversed(b2s[-1]))) 
+        #         b2s.append(list(list(reversed(b2[:i]))+b2[i:]))               
+        #         b2s.append(list(b2[:i])+list(reversed(b2[i:])))
+        #         b2s.append(list(list(reversed(b2[i:]))+b2[:i]))
+        #         b2s.append(list((b2[i:]+list(reversed(b2[:i])))))
+        # return b2s
+        for b2 in b2s_new:
+            G1 = mol_to_graph(mol2, b2)
+            G2 = mol_to_graph(mol2, b2)
+            gm = GraphMatcher(G1, G2, lambda a1, a2: a1['symbol']==a2['symbol'], lambda e1, e2: e1['bond_type']==e2['bond_type'])
+            for lookup in gm.isomorphisms_iter():
+                b2_new = deepcopy(b2)
+                for i, n in enumerate(b2):
+                    b2_new[i] = b2[int(lookup[str(i)])]
+                b2s.append(b2_new)
     else:
         for b2 in enumerate_black_subsets(mol2, len(r_grp_1)):
             b2 = list(b2)
@@ -319,6 +379,7 @@ def reds_isomorphic(m1, m2, rdkit=False):
     # if rdkit and not r_grp_m2:
     #     r_grp_m2 = [[]]
     for r_grp_1, r_grp_2 in product(r_grp_m1, r_grp_m2):        
+
         res = red_isomorphic(m1, m2, r_grp_1, r_grp_2, rdkit=rdkit)
         if res:
             parallel.append(res)
@@ -744,3 +805,13 @@ def is_novel(dags, root):
             return False
     return True
     
+
+def mol2fp(mol,nBits=2048):
+    # black_inds = [a.GetIdx() for a in mol.GetAtoms() if not a.GetBoolProp('r')]
+    # mol_extract = extract_subgraph(mol, black_inds)[1]
+    # Chem.SanitizeMol(mol_extract)
+    # fp = AllChem.GetMorganFingerprintAsBitVect(mol_extract, 2, nBits) 
+    fp = AllChem.GetMorganFingerprintAsBitVect(mol, 2, nBits) 
+    arr = np.zeros((1,))
+    DataStructs.ConvertToNumpyArray(fp, arr)
+    return arr    

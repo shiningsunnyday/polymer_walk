@@ -15,7 +15,7 @@ from sklearn.metrics import r2_score
 import pandas as pd
 from tqdm import tqdm
 
-def walk_edge_weight(dag, graph, model, proc):
+def walk_edge_weight(dag, graph, model, proc, eps=1e-6):
     N = len(graph.graph)
     walk_order = []
     walk_order = proc.dfs_order
@@ -30,13 +30,13 @@ def walk_edge_weight(dag, graph, model, proc):
         cur_node_ind = graph.index_lookup[walk_order[j%len(walk_order)].val]   
         # print(f"input state {get_repr(state)}, context {get_repr(context)}, t {t}")               
         update, context = model(state, context, t)                
-        state = state_to_probs(state+update, graph.adj[cur_node_ind])
+        state = state_to_probs(state+update, graph.adj[prev_node_ind])
         # print(f"post state {get_repr(state)}, context {get_repr(context)}, t {t}")  
         # dist = Categorical(state)
         # log_prob = dist.log_prob(cur_node_ind)
         t += 1
-        W_adj[prev_node_ind, cur_node_ind] = state[0, cur_node_ind]
-        W_adj[cur_node_ind, prev_node_ind] = state[0, cur_node_ind]
+        W_adj[prev_node_ind, cur_node_ind] = max(state[0, cur_node_ind], eps)
+        W_adj[cur_node_ind, prev_node_ind] = max(state[0, cur_node_ind], eps)
         # print(f"recounted {cur_node_ind} with prob {state[0, cur_node_ind]}")        
         state = torch.zeros((1, N), dtype=torch.float64)
         state[0, cur_node_ind] = 1.
@@ -59,18 +59,20 @@ def featurize_walk(graph, model, dag, proc, mol_feats, feat_lookup={}):
         except:
             breakpoint()
         # GNN with edge weight
-        return W_to_attr(args, W_adj, mol_feats)
+        node_attr, edge_index, edge_attr = W_to_attr(args, W_adj, mol_feats)
     else:
         assert feat_lookup, "need features for isolated groups"
         assert dag.val not in graph.graph
         assert len(proc.dfs_order) == 1
         N = len(graph.graph)
         W_adj = torch.zeros((N, N), dtype=torch.float32)
-        mol_isolated_feats = feat_lookup[dag.val][None].repeat((N,1))
+        feat = feat_lookup[dag.val][None].astype('float32')
+        mol_isolated_feats = np.tile(feat,[N,1])
         node_attr, edge_index, edge_attr = W_to_attr(args, W_adj, mol_isolated_feats)
         assert edge_index.shape[1] == 0
         edge_index = torch.tensor([[0], [0]], dtype=torch.int64) # trivial self-connection for gnn
-        return node_attr, edge_index, edge_attr
+        edge_attr = torch.tensor([[1.]])
+    return node_attr, edge_index, edge_attr
         
 
 
@@ -164,6 +166,8 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats, feat_
 
     train_feat_cache = {}
     test_feat_cache = {}
+    if args.feat_cache and os.path.exists(args.feat_cache):
+        train_feat_cache, test_feat_cache = pickle.load(open(args.feat_cache, 'rb'))        
     for epoch in range(args.num_epochs):        
         # compute edge control weighted adj matrix via model inference    
         predictor.train()
@@ -186,7 +190,6 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats, feat_
                 if args.update_grammar:
                     node_attr, edge_index, edge_attr = featurize_walk(graph, model, dags_copy_train[ind], proc, mol_feats, feat_lookup)
                 else:
-                    assert not args.shuffle
                     if ind not in train_feat_cache:
                         node_attr, edge_index, edge_attr = featurize_walk(graph, model, dags_copy_train[ind], proc, mol_feats, feat_lookup)
                         node_attr, edge_index, edge_attr = node_attr.detach(), edge_index.detach(), edge_attr.detach()
@@ -204,6 +207,7 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats, feat_
                 loss.backward()
                 if not (loss == loss).all():
                     breakpoint()        
+            
             if args.augment_dfs:
                 assert args.num_accumulation_steps == 1
                 for p in all_params:
@@ -240,7 +244,8 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats, feat_
                 loss_history.append(loss.item())
                 test_preds.append((prop.cpu()*std+mean).numpy())
 
-
+        if args.feat_cache and not os.path.exists(args.feat_cache):
+            pickle.dump((train_feat_cache, test_feat_cache), open(args.feat_cache, 'wb+'))
 
         if np.mean(loss_history) < best_loss:
             best_loss = np.mean(loss_history)
@@ -257,6 +262,9 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats, feat_
         if 'permeability' in args.walks_file:
             col_names = ['log10_He_Bayesian','log10_H2_Bayesian','log10_O2_Bayesian','log10_N2_Bayesian','log10_CO2_Bayesian','log10_CH4_Bayesian']            
             metric_names = [col_names[j] for j in args.property_cols]
+        elif 'crow' in args.walks_file:
+            col_names = ['tg_celsius']            
+            metric_names = [col_names[j] for j in args.property_cols]            
         else:
             print(f"assuming {args.walks_file} is group-contrib")
             col_names = ['H2','N2','O2','CH4','CO2']
@@ -330,6 +338,8 @@ def preprocess_data(all_dags, args, logs_folder):
         if i not in dag_ids: continue
         if 'permeability' in args.walks_file:
             prop = l.rstrip('\n').split(',')[1:]
+        elif 'crow' in args.walks_file:
+            prop = l.rstrip('\n').split(',')[1:]
         else:
             prop = l.rstrip('\n').split(' ')[-1]
             prop = prop.strip('(').rstrip(')').split(',')
@@ -340,6 +350,13 @@ def preprocess_data(all_dags, args, logs_folder):
                 mask.append(i)
                 props.append([prop[j] for j in args.property_cols])
                 dags.append(dag_ids[i])
+            elif 'crow' in args.walks_file:
+                assert len(args.property_cols) == 1
+                assert len(prop) == 1
+                prop = list(map(float, prop))
+                mask.append(i)
+                props.append([prop[j] for j in args.property_cols])
+                dags.append(dag_ids[i])                
             else:
                 try:
                     prop = list(map(lambda x: float(x) if x not in ['-','_'] else None, prop))
@@ -350,7 +367,6 @@ def preprocess_data(all_dags, args, logs_folder):
                     mask.append(i)
                     props.append([prop[i1],prop[i1]/prop[i2]])
                     dags.append(dag_ids[i])
-    
     props = np.array(props)
     mean, std = np.mean(props,axis=0,keepdims=True), np.std(props,axis=0,keepdims=True)    
     with open(os.path.join(logs_folder, 'mean_and_std.txt'), 'w+') as f:
@@ -403,8 +419,8 @@ def main(args):
         # leaf_node.add_child((root_node, e)) # breaks dag
         # root_node.parent = (leaf_node, e)
         if root_node.children:
-          root_node.dag_id = k
-          dags.append(root_node)
+            root_node.dag_id = k
+            dags.append(root_node)
 
     config_json = json.loads(json.load(open(os.path.join(args.grammar_folder,'config.json'),'r')))
     diffusion_args = {k[len('diffusion_'):]: v for (k, v) in config_json.items() if 'diffusion' in k}
@@ -416,8 +432,8 @@ def main(args):
     N = len(G)   
     all_nodes = list(G.nodes())   
 
-
-    run_tests(graph, all_nodes)
+    if 'group-contrib' in args.motifs_folder:
+        run_tests(graph, all_nodes)
  
     mols = load_mols(args.motifs_folder)
     red_grps = annotate_extra(mols, args.extra_label_path)    
@@ -427,16 +443,27 @@ def main(args):
         feat_lookup = {}
         if 'permeability' in args.walks_file:
             for i in range(1,len(mols)+1):
-                feat_lookup[name_group(i)] = mol2fp(mols[i-1])[0]            
+                feat_lookup[name_group(i)] = mol2fp(mols[i-1])       
+        elif 'crow' in args.walks_file:
+            for i in range(1,len(mols)+1):
+                feat_lookup[name_group(i)] = mol2fp(mols[i-1])     
         else:
             for i in range(1,98):
-                feat_lookup[name_group(i)] = mol2fp(mols[i-1])[0]            
+                feat_lookup[name_group(i)] = mol2fp(mols[i-1])       
         mol_feats = np.zeros((len(G), 2048), dtype=np.float32)
         for n in G.nodes():
             ind = graph.index_lookup[n]
             mol_feats[ind] = feat_lookup[n.split(':')[0]]
     elif args.mol_feat == 'one_hot':
-        mol_feats = np.eye(len(G), dtype=np.float32)
+        feat_lookup = {}
+        for i in range(1,len(mols)+1):
+            feat = np.zeros((len(mols),))
+            feat[i-1] = 1
+            feat_lookup[name_group(i)] = feat
+        mol_feats = np.zeros((len(G), len(mols)), dtype=np.float32)
+        for n in G.nodes():
+            ind = graph.index_lookup[n]
+            mol_feats[ind] = feat_lookup[n.split(':')[0]]
     elif args.mol_feat == 'ones':
         mol_feats = np.ones((len(G), args.input_dim), dtype=np.float32)
     elif args.mol_feat == 'W':
@@ -459,7 +486,6 @@ def main(args):
         files = [f for f in sorted_files if f.endswith('.npy')]
         feats = [np.load(os.path.join(args.mol_feat_dir, f)) for f in files]
         feats = np.stack(feats)
-        feats = torch.from_numpy(feats)
         feat_lookup = {}
         for i in range(1,len(mols)+1):
             feat_lookup[name_group(i)] = feats[i-1]
@@ -502,6 +528,7 @@ def main(args):
     graph.reset()
     trajs = []
     novel = []
+    breakpoint()
     lines = open(args.walks_file).readlines()
     walks = set()
     for i, l in enumerate(lines):        
@@ -599,6 +626,8 @@ def main(args):
     i1, i2 = args.property_cols
     if 'permeability' in args.walks_file:
         col_names = ['log10_He_Bayesian','log10_H2_Bayesian','log10_O2_Bayesian','log10_N2_Bayesian','log10_CO2_Bayesian','log10_CH4_Bayesian']            
+    elif 'crow' in args.walks_file:
+        col_names = ['tg_celsius']                    
     else:
         print(f"assuming {args.walks_file} is group-contrib")
         col_names = ['H2','N2','O2','CH4','CO2']
@@ -720,6 +749,7 @@ if __name__ == "__main__":
     # data params
     parser.add_argument('--predefined_graph_file')    
     parser.add_argument('--dags_file')
+    parser.add_argument('--feat_cache', help='where to cache feats')
     parser.add_argument('--walks_file') 
     parser.add_argument('--property_cols', type=int, default=[0,1], nargs='+', 
                         help='for group contrib, expect 2 cols of the respective permeabilities')
@@ -731,7 +761,7 @@ if __name__ == "__main__":
     # training params
     parser.add_argument('--num_epochs', type=int)
     parser.add_argument('--lr', type=float, default=1e-3)
-    parser.add_argument('--grammar_lr', type=float, default=1e-3)
+    parser.add_argument('--grammar_lr', type=float, default=0.0)
     parser.add_argument('--momentum', type=float, default=0.0)
     parser.add_argument('--num_accumulation_steps', type=int, default=1)
     parser.add_argument('--opt', default='adam')
@@ -744,7 +774,7 @@ if __name__ == "__main__":
     parser.add_argument('--attn_W', action='store_true')
     parser.add_argument('--hidden_dim', type=int, default=16)
     parser.add_argument('--num_layers', type=int, default=5)
-    parser.add_argument('--edge_weights', action='store_false')
+    parser.add_argument('--edge_weights', action='store_true')
     parser.add_argument('--gnn', default='gin')
     parser.add_argument('--act', default='relu')
     parser.add_argument('--share_params', action='store_false')

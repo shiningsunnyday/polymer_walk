@@ -1,6 +1,7 @@
 import os
 from rdkit import Chem
 from rdkit.Chem import Draw
+from rdkit.Chem import AllChem, DataStructs
 from collections import defaultdict
 import re
 import networkx as nx
@@ -10,7 +11,7 @@ def name_group(m):
     """
     ANYTHING OTHER THAN GROUP CONTRIB
     """
-    # return f"G{m}" # not group contrib
+    return f"G{m}" # not group contrib
 
     """GROUP CONTRIB"""
     prefix = lambda x: "P" if x <= 41 else ("S" if x <= 73 else "L")
@@ -275,7 +276,6 @@ def annotate_extra(mols, path):
                 labels.append((int(label), red_grp.rstrip('\n')))
 
     print(len(mols), len(all_labels))
-    breakpoint()
     if volumes: assert len(volumes) == len(mols)
     for i in range(len(all_labels)):
         m = mols[i]
