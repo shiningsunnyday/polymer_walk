@@ -408,10 +408,10 @@ class Predictor(nn.Module):
                     mlp_in = nn.Sequential(lin_out_1, act, dropout, lin_out_2)
                 else:
                     mlp_in = nn.Sequential(lin_out_1, act, lin_out_2)
-                nn.init.zeros_(lin_out_1.weight)
-                nn.init.zeros_(lin_out_1.bias)
-                nn.init.zeros_(lin_out_2.weight)
-                nn.init.zeros_(lin_out_2.bias)                
+                nn.init.normal_(lin_out_1.weight)
+                nn.init.normal_(lin_out_1.bias)
+                nn.init.normal_(lin_out_2.weight)
+                nn.init.normal_(lin_out_2.bias)                
                 layer_name = f"in_mlp" if share_params else f"in_mlp_{i}"
                 setattr(self, layer_name, mlp_in)
 
@@ -427,10 +427,10 @@ class Predictor(nn.Module):
                     mlp_out = nn.Sequential(lin_out_1, act, dropout, lin_out_2)
                 else:
                     mlp_out = nn.Sequential(lin_out_1, act, lin_out_2)
-                nn.init.zeros_(lin_out_1.weight)
-                nn.init.zeros_(lin_out_1.bias)
-                nn.init.zeros_(lin_out_2.weight)
-                nn.init.zeros_(lin_out_2.bias)  
+                nn.init.normal_(lin_out_1.weight)
+                nn.init.normal_(lin_out_1.bias)
+                nn.init.normal_(lin_out_2.weight)
+                nn.init.normal_(lin_out_2.bias)  
                 layer_name = f"mlp_out" if share_params else f"mlp_out_{i}"
                 setattr(self, layer_name, mlp_out)
 
@@ -446,10 +446,10 @@ class Predictor(nn.Module):
                             input_dim = hidden_dim     
                         lin_i_1 = nn.Linear(input_dim, hidden_dim)
                         lin_i_2 = nn.Linear(hidden_dim, hidden_dim)                        
-                        nn.init.zeros_(lin_i_1.weight)
-                        nn.init.zeros_(lin_i_2.weight)
-                        nn.init.zeros_(lin_i_1.bias)
-                        nn.init.zeros_(lin_i_2.bias)                                    
+                        nn.init.normal_(lin_i_1.weight)
+                        nn.init.normal_(lin_i_2.weight)
+                        nn.init.normal_(lin_i_1.bias)
+                        nn.init.normal_(lin_i_2.bias)                                    
                         # setattr(self, f"gnn_{i}", GATConv(in_channels=-1, out_channels=hidden_dim, edge_dim=1))
                         if self.dropout_rate:
                             dropout = nn.Dropout(self.dropout_rate)
@@ -477,18 +477,18 @@ class Predictor(nn.Module):
                 mlp_out = nn.Sequential(lin_out_1, act, dropout, lin_out_2)
             else:
                 mlp_out = nn.Sequential(lin_out_1, act, lin_out_2)
-            nn.init.zeros_(lin_out_1.weight)
-            nn.init.zeros_(lin_out_1.bias)
-            nn.init.zeros_(lin_out_2.weight)
-            nn.init.zeros_(lin_out_2.bias)  
+            nn.init.normal_(lin_out_1.weight)
+            nn.init.normal_(lin_out_1.bias)
+            nn.init.normal_(lin_out_2.weight)
+            nn.init.normal_(lin_out_2.bias)  
             setattr(self, f"out_mlp_{i}", mlp_out)
         
         
 
     def forward(self, X, edge_index, edge_weights):  
-        node_mask = torch.zeros((X.shape[0],))==1
-        # node_mask = torch.ones((X.shape[0], 1))
-        node_mask[edge_index.flatten()] = True
+        # node_mask = torch.zeros((X.shape[0],))==1
+        # # node_mask = torch.ones((X.shape[0], 1))
+        # node_mask[edge_index.flatten()] = True
         if self.gnn == 'gin':
             head_outs = []
             for j in range(1, self.num_heads+1):
@@ -506,14 +506,14 @@ class Predictor(nn.Module):
                 X = head_outs[0]
                 if self.do_mlp_out:
                     X = getattr(self, "mlp_out")(X)
-                props = [getattr(self, f"out_mlp_{i}")((X[node_mask]).mean(axis=0)) for i in range(1,self.num_heads+1)] 
+                props = [getattr(self, f"out_mlp_{i}")(X) for i in range(1,self.num_heads+1)] 
             else:
                 assert len(head_outs) == self.num_heads
                 props = []                
                 for i in range(1,self.num_heads+1):
                     if self.do_mlp_out:
                         head_outs[i-1] = getattr(self, f"mlp_out_{i}")(head_outs[i-1])
-                    props.append(getattr(self, f"out_mlp_{i}")((head_outs[i-1][node_mask]).mean(axis=0)))
+                    props.append(getattr(self, f"out_mlp_{i}")(head_outs[i-1]))
         elif self.gnn in ['gat', 'gcn']:
             if self.share_params:
                 if self.in_mlp:
@@ -522,7 +522,7 @@ class Predictor(nn.Module):
                 X = getattr(self, f"gnn_conv")(X, edge_index, edge_weight=(edge_weights if self.edge_weights else None))
                 if self.do_mlp_out:
                     X = getattr(self, "mlp_out")(X)                
-                props = [getattr(self, f"out_mlp_{i}")((X[node_mask]).mean(axis=0)) for i in range(1,self.num_heads+1)]
+                props = [getattr(self, f"out_mlp_{i}")(X) for i in range(1,self.num_heads+1)]
             else:
                 head_outs = []
                 for j in range(1, self.num_heads+1):   
@@ -535,7 +535,7 @@ class Predictor(nn.Module):
                 for i in range(1,self.num_heads+1):
                     if self.do_mlp_out:
                         head_outs[i-1] = getattr(self, f"mlp_out_{i}")(head_outs[i-1])
-                    props.append(getattr(self, f"out_mlp_{i}")((head_outs[i-1][node_mask]).mean(axis=0)))
+                    props.append(getattr(self, f"out_mlp_{i}")(head_outs[i-1]))
         else:
             raise
         
@@ -557,6 +557,35 @@ def state_to_probs(state, adj=None):
             breakpoint()
     state = state - state.min(-1, True).values
     return state/state.sum(axis=-1)
+
+
+def walk_edge_weight(dag, graph, model, proc, eps=1e-6):
+    N = len(graph.graph)
+    walk_order = []
+    walk_order = proc.dfs_order
+    context = torch.zeros((1, N), dtype=torch.float64)
+    start_node_ind = graph.index_lookup[walk_order[0].val]
+    prev_node_ind = start_node_ind
+    W_adj = torch.zeros((N, N), dtype=torch.float32)
+    t = 0
+    state = torch.zeros((1, N), dtype=torch.float64)
+    state[0, start_node_ind] = 1.
+    for j in range(1, len(walk_order)):
+        cur_node_ind = graph.index_lookup[walk_order[j%len(walk_order)].val]   
+        # print(f"input state {get_repr(state)}, context {get_repr(context)}, t {t}")               
+        update, context = model(state, context, t)                
+        state = state_to_probs(state+update, graph.adj[prev_node_ind])
+        # print(f"post state {get_repr(state)}, context {get_repr(context)}, t {t}")  
+        # dist = Categorical(state)
+        # log_prob = dist.log_prob(cur_node_ind)
+        t += 1
+        W_adj[prev_node_ind, cur_node_ind] = max(state[0, cur_node_ind], eps)
+        W_adj[cur_node_ind, prev_node_ind] = max(state[0, cur_node_ind], eps)
+        # print(f"recounted {cur_node_ind} with prob {state[0, cur_node_ind]}")        
+        state = torch.zeros((1, N), dtype=torch.float64)
+        state[0, cur_node_ind] = 1.
+        prev_node_ind = cur_node_ind  
+    return W_adj 
 
 
 

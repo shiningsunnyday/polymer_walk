@@ -3,11 +3,15 @@ import pickle
 import random
 import networkx as nx
 from utils import *
-from diffusion import L_grammar, Predictor, DiffusionGraph, DiffusionProcess, sample_walk, process_good_traj, get_repr, state_to_probs, append_traj
+from diffusion import L_grammar, Predictor, DiffusionGraph, DiffusionProcess, sample_walk, process_good_traj, get_repr, state_to_probs, append_traj, walk_edge_weight
 import json
 import torch
 import time
 import torch.nn as nn
+from torch.utils.data import Dataset
+from torch_geometric.loader import DataLoader
+from torch_geometric.data import Data
+from torch_geometric.nn import aggr
 import matplotlib.pyplot as plt
 from copy import deepcopy
 from sklearn.model_selection import train_test_split
@@ -15,33 +19,191 @@ from sklearn.metrics import r2_score
 import pandas as pd
 from tqdm import tqdm
 
-def walk_edge_weight(dag, graph, model, proc, eps=1e-6):
-    N = len(graph.graph)
-    walk_order = []
-    walk_order = proc.dfs_order
-    context = torch.zeros((1, N), dtype=torch.float64)
-    start_node_ind = graph.index_lookup[walk_order[0].val]
-    prev_node_ind = start_node_ind
-    W_adj = torch.zeros((N, N), dtype=torch.float32)
-    t = 0
-    state = torch.zeros((1, N), dtype=torch.float64)
-    state[0, start_node_ind] = 1.
-    for j in range(1, len(walk_order)):
-        cur_node_ind = graph.index_lookup[walk_order[j%len(walk_order)].val]   
-        # print(f"input state {get_repr(state)}, context {get_repr(context)}, t {t}")               
-        update, context = model(state, context, t)                
-        state = state_to_probs(state+update, graph.adj[prev_node_ind])
-        # print(f"post state {get_repr(state)}, context {get_repr(context)}, t {t}")  
-        # dist = Categorical(state)
-        # log_prob = dist.log_prob(cur_node_ind)
-        t += 1
-        W_adj[prev_node_ind, cur_node_ind] = max(state[0, cur_node_ind], eps)
-        W_adj[cur_node_ind, prev_node_ind] = max(state[0, cur_node_ind], eps)
-        # print(f"recounted {cur_node_ind} with prob {state[0, cur_node_ind]}")        
-        state = torch.zeros((1, N), dtype=torch.float64)
-        state[0, cur_node_ind] = 1.
-        prev_node_ind = cur_node_ind  
-    return W_adj 
+
+class WalkDataset(Dataset):
+    def __init__(self, 
+                 dags, 
+                 procs,
+                 props, 
+                 graph, 
+                 model, 
+                 mol_feats, 
+                 feat_lookup):
+        self.props = props
+        self.dags = dags
+        self.procs = procs
+        self.graph = graph
+        self.model = model
+        self.mol_feats = mol_feats
+        self.feat_lookup = feat_lookup
+        
+
+    def __len__(self):
+        return len(self.dags)
+
+
+    def __getitem__(self, idx):
+        assert len(self.procs[idx]) == 1
+        node_attr, edge_index, edge_attr = featurize_walk(self.graph,
+                                                          self.model, 
+                                                          self.dags[idx], 
+                                                          self.procs[idx][0], 
+                                                          self.mol_feats, 
+                                                          self.feat_lookup)                        
+        edge_attr = edge_attr.detach()
+        return Data(edge_index=edge_index, x=node_attr, edge_attr=edge_attr, y=self.props[idx:idx+1])
+
+
+
+
+def train_sgd(args, 
+              opt, 
+              model,
+              predictor,
+              all_params,
+              loss_func,
+              mol_feats,
+              feat_lookup,
+              norm_props_train,             
+              dags_copy_train, 
+              train_feat_cache,
+              train_order, 
+              all_procs):
+    train_loss_history = []
+    times = []  
+    for i in tqdm(range(len(dags_copy_train))):
+        start_time = time.time()
+        ind = train_order[i]
+        procs = all_procs[ind]
+        if i % args.num_accumulation_steps == 1 % args.num_accumulation_steps: 
+            opt.zero_grad()         
+        for proc in procs:
+            start_feat_time = time.time()
+            if args.update_grammar:
+                node_attr, edge_index, edge_attr = featurize_walk(graph, model, dags_copy_train[ind], proc, mol_feats, feat_lookup)
+            else:
+                if ind not in train_feat_cache:
+                    node_attr, edge_index, edge_attr = featurize_walk(graph, model, dags_copy_train[ind], proc, mol_feats, feat_lookup)
+                    node_attr, edge_index, edge_attr = node_attr.detach(), edge_index.detach(), edge_attr.detach()
+                    train_feat_cache[ind] = (node_attr, edge_index, edge_attr)                      
+                node_attr, edge_index, edge_attr = train_feat_cache[ind]
+                node_attr, edge_index, edge_attr = node_attr.clone(), edge_index.clone(), edge_attr.clone().detach()
+                assert node_attr.requires_grad == False
+            
+            X = node_attr        
+            start_pred_time = time.time()                
+            prop = do_predict(predictor, X, edge_index, edge_attr, cuda=args.cuda)                                          
+            loss = loss_func(prop, norm_props_train[ind])
+            train_loss_history.append(loss.item())     
+            loss_backward_time = time.time()
+            loss.backward()
+            if not (loss == loss).all():
+                breakpoint()        
+        
+        if args.augment_dfs:
+            assert args.num_accumulation_steps == 1
+            for p in all_params:
+                if p.requires_grad:
+                    p.grad /= len(procs)
+        opt_step_time = time.time()
+        if i == len(dags_copy_train)-1 or i % args.num_accumulation_steps == 0:                                 
+            opt.step()
+        final_time = time.time()
+        times.append([start_feat_time-start_time, 
+                      start_pred_time-start_feat_time, 
+                      loss_backward_time-start_pred_time, 
+                      opt_step_time-loss_backward_time, 
+                      final_time-opt_step_time])
+    
+    for time_type, time_took in zip(['zero grad', 'feat', 'pred', 'backward', 'step'], np.array(times).mean(axis=0).tolist()):
+        print(f"{time_type} took {time_took}")    
+    return train_loss_history
+
+
+
+def eval_sgd(args, 
+             model, 
+             predictor, 
+             loss_func, 
+             mol_feats, 
+             feat_lookup, 
+             norm_props_test,              
+             dags_copy_test,  
+             test_feat_cache, 
+             all_procs,
+             mean,
+             std):             
+    loss_history = []
+    test_preds = []
+    with torch.no_grad():
+        for i in tqdm(range(len(dags_copy_test))):     
+            if args.update_grammar:
+                node_attr, edge_index, edge_attr = featurize_walk(graph, model, dags_copy_test[i], all_procs[i], mol_feats, feat_lookup)
+            else:
+                if i in test_feat_cache:
+                    node_attr, edge_index, edge_attr = test_feat_cache[i]
+                    assert node_attr.requires_grad == False
+                else:
+                    node_attr, edge_index, edge_attr = featurize_walk(graph, model, dags_copy_test[i], all_procs[i], mol_feats, feat_lookup)
+                    test_feat_cache[i] = (node_attr, edge_index, edge_attr)                
+            X = node_attr
+            prop = do_predict(predictor, X, edge_index, edge_attr, cuda=args.cuda)                          
+            loss = loss_func(prop, norm_props_test[i])            
+            loss_history.append(loss.item())
+            test_preds.append((prop.cpu()*std+mean).numpy())    
+    return test_preds, loss_history
+
+
+
+def eval_batch(args, 
+               predictor,
+               loss_func,
+               batch_loader,
+               mean,
+               std):
+    loss_history = np.empty((0, 1))
+    test_preds = np.empty((0, mean.shape[-1]))
+    with torch.no_grad():
+        for batch in tqdm(batch_loader):
+            X, edge_index, edge_attr, props_y = batch.x, batch.edge_index, batch.edge_attr, batch.y
+            prop = do_predict(predictor, X, edge_index, edge_attr, batch=batch.batch, cuda=args.cuda)                          
+            loss = loss_func(prop, props_y)            
+            loss_history = np.concatenate((loss_history, loss), axis=0)
+            test_preds = np.concatenate((test_preds, (prop.cpu()*std+mean).numpy()), axis=0)
+    return test_preds, loss_history    
+
+
+
+def train_batch(args,
+                opt, 
+                predictor,
+                loss_func,
+                batch_loader):                
+    train_loss_history = np.empty((0, 1))
+    times = []  
+    for batch in tqdm(batch_loader):
+        start_time = time.time()        
+        opt.zero_grad()                 
+        X, edge_index, edge_attr, props_y = batch.x, batch.edge_index, batch.edge_attr, batch.y
+        start_pred_time = time.time()                
+        prop = do_predict(predictor, X, edge_index, edge_attr, batch=batch.batch, cuda=args.cuda)                                          
+        loss = loss_func(prop, props_y)        
+        train_loss_history = np.concatenate((train_loss_history, loss.detach().numpy()), axis=0)        
+        loss_backward_time = time.time()
+        loss.mean().backward()
+        if not (loss == loss).all():
+            breakpoint()        
+        opt_step_time = time.time()                  
+        opt.step()        
+        final_time = time.time()
+        times.append([start_pred_time-start_time, 
+                      loss_backward_time-start_pred_time, 
+                      opt_step_time-loss_backward_time, 
+                      final_time-opt_step_time])    
+    for time_type, time_took in zip(['zero grad', 'pred', 'backward', 'step'], np.array(times).mean(axis=0).tolist()):
+        print(f"{time_type} took {time_took}")    
+    return train_loss_history
+
 
 
 def featurize_walk(graph, model, dag, proc, mol_feats, feat_lookup={}):
@@ -83,7 +245,8 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats, feat_
     else:
         dags_copy_train, dags_copy_test, norm_props_train, norm_props_test, props_train, props_test, train_inds, test_inds = dags_copy, dags_copy, norm_props, norm_props, props, props, list(range(len(dags_copy))), list(range(len(dags_copy)))
     print(f"{len(dags_copy_train)} train dags, {len(dags_copy_test)} test dags")
-    all_procs = []
+    all_procs_train = []
+    all_procs_test = []
     # data augmentation
     for i in range(len(dags_copy_train)):
         proc = graph.lookup_process(dags_copy_train[i].dag_id)
@@ -99,8 +262,12 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats, feat_
                     procs.append(DiffusionProcess(dags_copy_train[i], graph.index_lookup, dfs_seed=j, **graph.diffusion_args))
         # for proc in procs:
         #     print([a.id for a in proc.dfs_order])
-        all_procs.append(procs)
-
+        all_procs_train.append(procs)
+    all_procs_test = []
+    for i in range(len(dags_copy_test)):
+        proc = graph.lookup_process(dags_copy_test[i].dag_id)
+        procs = [proc]
+        all_procs_test.append(procs)
 
     G = graph.graph  
     N = len(G)    
@@ -166,85 +333,87 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats, feat_
 
     train_feat_cache = {}
     test_feat_cache = {}
-    if args.feat_cache and os.path.exists(args.feat_cache):
+    if args.batch_size == 1 and args.feat_cache and os.path.exists(args.feat_cache):
         train_feat_cache, test_feat_cache = pickle.load(open(args.feat_cache, 'rb'))        
+    train_dataset = WalkDataset(dags_copy_train, 
+                          all_procs_train,
+                          norm_props_train,                           
+                          graph, 
+                          model, 
+                          mol_feats, 
+                          feat_lookup)
+    test_dataset = WalkDataset(dags_copy_test, 
+                          all_procs_test,
+                          norm_props_test,                           
+                          graph, 
+                          model, 
+                          mol_feats, 
+                          feat_lookup)    
+    train_batch_loader = DataLoader(train_dataset, 
+                                    batch_size=args.batch_size, 
+                                    num_workers=args.num_workers,
+                                    prefetch_factor=args.prefetch_factor,
+                                    shuffle=args.shuffle)
+    eval_batch_loader = DataLoader(test_dataset,
+                                   batch_size=args.batch_size,
+                                   num_workers=args.num_workers,
+                                   prefetch_factor=args.prefetch_factor)
+    loss_func = nn.MSELoss(reduce=args.batch_size==1)
     for epoch in range(args.num_epochs):        
         # compute edge control weighted adj matrix via model inference    
         predictor.train()
         graph.reset()
-        # random.shuffle(dags_copy_train)
-        train_loss_history = []
+        # random.shuffle(dags_copy_train)        
         train_order = list(range(len(dags_copy_train)))
         if args.shuffle:
-            random.shuffle(train_order)
-        
-        times = []        
-        for i in tqdm(range(len(dags_copy_train))):
-            start_time = time.time()
-            ind = train_order[i]
-            procs = all_procs[ind]
-            if i % args.num_accumulation_steps == 1 % args.num_accumulation_steps: 
-                opt.zero_grad()         
-            for proc in procs:
-                start_feat_time = time.time()
-                if args.update_grammar:
-                    node_attr, edge_index, edge_attr = featurize_walk(graph, model, dags_copy_train[ind], proc, mol_feats, feat_lookup)
-                else:
-                    if ind not in train_feat_cache:
-                        node_attr, edge_index, edge_attr = featurize_walk(graph, model, dags_copy_train[ind], proc, mol_feats, feat_lookup)
-                        node_attr, edge_index, edge_attr = node_attr.detach(), edge_index.detach(), edge_attr.detach()
-                        train_feat_cache[ind] = (node_attr, edge_index, edge_attr)                      
-                    node_attr, edge_index, edge_attr = train_feat_cache[ind]
-                    node_attr, edge_index, edge_attr = node_attr.clone(), edge_index.clone(), edge_attr.clone().detach()
-                    assert node_attr.requires_grad == False
-                
-                X = node_attr        
-                start_pred_time = time.time()                
-                prop = do_predict(predictor, X, edge_index, edge_attr, cuda=args.cuda)                                          
-                loss = loss_func(prop, norm_props_train[ind])
-                train_loss_history.append(loss.item())     
-                loss_backward_time = time.time()
-                loss.backward()
-                if not (loss == loss).all():
-                    breakpoint()        
-            
-            if args.augment_dfs:
-                assert args.num_accumulation_steps == 1
-                for p in all_params:
-                    if p.requires_grad:
-                        p.grad /= len(procs)
-            opt_step_time = time.time()
-            if i == len(dags_copy_train)-1 or i % args.num_accumulation_steps == 0:                                 
-                opt.step()
-            final_time = time.time()
-            times.append([start_feat_time-start_time, start_pred_time-start_feat_time, loss_backward_time-start_pred_time, opt_step_time-loss_backward_time, final_time-opt_step_time])
-        
-        for time_type, time_took in zip(['zero grad', 'feat', 'pred', 'backward', 'step'], np.array(times).mean(axis=0).tolist()):
-            print(f"{time_type} took {time_took}")
+            random.shuffle(train_order)                      
+
+        if args.batch_size == 1:
+            train_loss_history = train_sgd(args, 
+                                           opt, 
+                                           model, 
+                                           predictor,
+                                           all_params,
+                                           loss_func,
+                                           mol_feats,
+                                           feat_lookup,
+                                           norm_props_train,
+                                           dags_copy_train,
+                                           train_feat_cache,
+                                           train_order,
+                                           all_procs_train)
+        else:
+            train_loss_history = train_batch(args,
+                                             opt,
+                                             predictor,
+                                             loss_func,
+                                             train_batch_loader)
 
 
         graph.reset()
-        test_preds = []
-        loss_history = []
         predictor.eval()
-        with torch.no_grad():
-            for i in tqdm(range(len(dags_copy_test))):     
-                if args.update_grammar:
-                    node_attr, edge_index, edge_attr = featurize_walk(graph, model, dags_copy_test[i], graph.lookup_process(dags_copy_test[i].dag_id), mol_feats, feat_lookup)
-                else:
-                    if i in test_feat_cache:
-                        node_attr, edge_index, edge_attr = test_feat_cache[i]
-                        assert node_attr.requires_grad == False
-                    else:
-                        node_attr, edge_index, edge_attr = featurize_walk(graph, model, dags_copy_test[i], graph.lookup_process(dags_copy_test[i].dag_id), mol_feats, feat_lookup)
-                        test_feat_cache[i] = (node_attr, edge_index, edge_attr)                
-                X = node_attr
-                prop = do_predict(predictor, X, edge_index, edge_attr, cuda=args.cuda)                          
-                loss = loss_func(prop, norm_props_test[i])            
-                loss_history.append(loss.item())
-                test_preds.append((prop.cpu()*std+mean).numpy())
+        if args.batch_size == 1:
+            test_preds, loss_history = eval_sgd(args,
+                                                model,
+                                                predictor,
+                                                loss_func,
+                                                mol_feats,
+                                                feat_lookup,
+                                                norm_props_test,
+                                                dags_copy_test,
+                                                test_feat_cache,
+                                                all_procs_test, 
+                                                mean, 
+                                                std)
+        else:            
+            test_preds, loss_history = eval_batch(args,
+                                                  predictor,
+                                                  loss_func,
+                                                  eval_batch_loader,
+                                                  mean,
+                                                  std)
 
-        if args.feat_cache and not os.path.exists(args.feat_cache):
+        if args.batch_size == 1 and args.feat_cache and not os.path.exists(args.feat_cache):
             pickle.dump((train_feat_cache, test_feat_cache), open(args.feat_cache, 'wb+'))
 
         if np.mean(loss_history) < best_loss:
@@ -379,11 +548,17 @@ def preprocess_data(all_dags, args, logs_folder):
     return props, norm_props, dags, mask
 
 
-def do_predict(predictor, X, edge_index, edge_attr, cuda=-1):    
+def do_predict(predictor, X, edge_index, edge_attr, batch=None, cuda=-1):    
     if cuda > -1:
         X, edge_index, edge_attr = X.to(f"cuda:{cuda}"), edge_index.to(f"cuda:{cuda}"), edge_attr.to(f"cuda:{cuda}")
     # try modifying X based on edge_attr
-    return predictor(X, edge_index, edge_attr)    
+    y_hat = predictor(X, edge_index, edge_attr)
+    if batch is None:
+        out = y_hat
+    else:
+        mean_aggr = aggr.MeanAggregation()        
+        out = mean_aggr(y_hat, batch)
+    return out
 
 
 def W_to_attr(args, W_adj, mol_feats):
@@ -760,6 +935,9 @@ if __name__ == "__main__":
 
     # training params
     parser.add_argument('--num_epochs', type=int)
+    parser.add_argument('--batch_size', type=int, default=1)
+    parser.add_argument('--num_workers', type=int, default=0)
+    parser.add_argument('--prefetch_factor', type=int, default=0)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--grammar_lr', type=float, default=0.0)
     parser.add_argument('--momentum', type=float, default=0.0)
