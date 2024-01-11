@@ -242,6 +242,9 @@ def featurize_walk(graph, model, dag, proc, mol_feats, feat_lookup={}):
         assert edge_index.shape[1] == 0
         edge_index = torch.tensor([[0], [0]], dtype=torch.int64) # trivial self-connection for gnn
         edge_attr = torch.tensor([[1.]])
+    if hasattr(dag, 'smiles'):
+        smiles_fp = torch.as_tensor(mol2fp(Chem.MolFromSmiles(dag.smiles)), dtype=torch.float32)
+        node_attr = torch.concat((node_attr, torch.tile(smiles_fp, (node_attr.shape[0],1))), -1)
     return node_attr, edge_index, edge_attr
         
 
@@ -350,6 +353,7 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats, feat_
     std = mean_and_std[:,1]        
 
     best_maes = [float("inf") for _ in args.property_cols]
+    best_avg_mae = float("inf")
     best_epochs = [0 for _ in args.property_cols]
 
     train_feat_cache = {}
@@ -495,7 +499,14 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats, feat_
                 f'best_{metric_names[i]}_r^2': best_epoch_r2,
                 f'best_{metric_names[i]}_mae': best_epoch_mae,
                 f'best_{metric_names[i]}_mse': best_epoch_mse,
-            })        
+            })  
+        avg_mae = np.abs(y_hat-y).mean()
+        if avg_mae < best_avg_mae:
+            best_avg_mae = avg_mae
+            print(f"epoch {epoch} best avg mae {best_avg_mae}")
+        metric.update({"best_avg_mae": best_avg_mae})
+        metric.update({"avg_mae": avg_mae})
+              
                         
         metrics.append(metric)
         df = pd.DataFrame(metrics)
@@ -530,13 +541,18 @@ def preprocess_data(all_dags, args, logs_folder):
     for i, l in enumerate(lines):        
         if i not in dag_ids: continue
         if 'permeability' in args.walks_file:
+            smiles = l.rstrip('\n').split(',')[0]
             prop = l.rstrip('\n').split(',')[1:]
         elif 'crow' in args.walks_file:
+            smiles = l.rstrip('\n').split(',')[0]
             prop = l.rstrip('\n').split(',')[1:]
         else:
+            smiles = l.rstrip('\n').split(',')[0]
             prop = l.rstrip('\n').split(' ')[-1]
-            prop = prop.strip('(').rstrip(')').split(',')
-     
+            prop = prop.strip('(').rstrip(')').split(',')     
+
+        if args.concat_mol_feats:
+            dag_ids[i].smiles = smiles
         if args.property_cols:
             if 'permeability' in args.walks_file:
                 prop = list(map(float, prop))
@@ -638,51 +654,51 @@ def main(args):
     red_grps = annotate_extra(mols, args.extra_label_path)    
     r_lookup = r_member_lookup(mols) 
 
-    if args.mol_feat == 'fp':
-        feat_lookup = {}
-        if 'permeability' in args.walks_file:
+    feat_lookup = {name_group(i): [] for i in range(1, len(mols)+1)}
+    for mol_feat in args.mol_feat:
+        if mol_feat == 'fp':            
+            if 'permeability' in args.walks_file:
+                for i in range(1,len(mols)+1):
+                    feat_lookup[name_group(i)].append(mol2fp(mols[i-1]))
+            elif 'crow' in args.walks_file:
+                for i in range(1,len(mols)+1):
+                    feat_lookup[name_group(i)].append(mol2fp(mols[i-1]))
+            else:
+                for i in range(1,98):
+                    feat_lookup[name_group(i)].append(mol2fp(mols[i-1]))        
+        elif mol_feat == 'emb':
+            pass
+        elif mol_feat == 'one_hot':            
             for i in range(1,len(mols)+1):
-                feat_lookup[name_group(i)] = mol2fp(mols[i-1])       
-        elif 'crow' in args.walks_file:
-            for i in range(1,len(mols)+1):
-                feat_lookup[name_group(i)] = mol2fp(mols[i-1])     
-        else:
+                feat = np.zeros((len(mols),))
+                feat[i-1] = 1
+                feat_lookup[name_group(i)].append(feat)
+        elif mol_feat == 'ones':
+            for i in range(1, len(mols)+1):
+                feat_lookup[name_group(i)].append(np.ones(args.input_dim))
+        elif mol_feat == 'W':
+            for i in range(1, len(mols)+1):
+                feat_lookup[name_group(i)].append(np.zeros(len(G)))
+        elif mol_feat == 'unimol':
+            assert len(mols) == 97
+            unimol_feats = torch.load('data/group_reprs.pt')
+            for i, unimol_feat in enumerate(unimol_feats):
+                unimol_feats[i] = unimol_feat.mean(axis=0)
+            unimol_feats = torch.stack(unimol_feats)            
             for i in range(1,98):
-                feat_lookup[name_group(i)] = mol2fp(mols[i-1])              
-    elif args.mol_feat == 'emb':
-        pass
-    elif args.mol_feat == 'one_hot':
-        feat_lookup = {}
-        for i in range(1,len(mols)+1):
-            feat = np.zeros((len(mols),))
-            feat[i-1] = 1
-            feat_lookup[name_group(i)] = feat
-    elif args.mol_feat == 'ones':
-        for i in range(1, len(mols)+1):
-            feat_lookup[name_group(i)] = np.ones(args.input_dim)        
-    elif args.mol_feat == 'W':
-        for i in range(1, len(mols)+1):
-            feat_lookup[name_group(i)] = np.zeros(len(G))
-    elif args.mol_feat == 'unimol':
-        assert len(mols) == 97
-        unimol_feats = torch.load('data/group_reprs.pt')
-        for i, unimol_feat in enumerate(unimol_feats):
-            unimol_feats[i] = unimol_feat.mean(axis=0)
-        unimol_feats = torch.stack(unimol_feats)
-        feat_lookup = {}
-        for i in range(1,98):
-            feat_lookup[name_group(i)] = unimol_feats[i-1]
-    elif os.path.isdir(args.mol_feat_dir):
-        sorted_files = sorted(os.listdir(args.mol_feat_dir), key=lambda x: int(Path(x).stem))
-        files = [f for f in sorted_files if f.endswith('.npy')]
-        feats = [np.load(os.path.join(args.mol_feat_dir, f)) for f in files]
-        feats = np.stack(feats)
-        feat_lookup = {}
-        for i in range(1,len(mols)+1):
-            feat_lookup[name_group(i)] = feats[i-1]
-    else:
-        raise
+                feat_lookup[name_group(i)].append(unimol_feats[i-1])
+        elif os.path.isdir(args.mol_feat_dir):
+            sorted_files = sorted(os.listdir(args.mol_feat_dir), key=lambda x: int(Path(x).stem))
+            files = [f for f in sorted_files if f.endswith('.npy')]
+            feats = [np.load(os.path.join(args.mol_feat_dir, f)) for f in files]
+            feats = np.stack(feats)            
+            for i in range(1,len(mols)+1):
+                feat_lookup[name_group(i)].append(feats[i-1])
+        else:
+            raise
 
+    for k in feat_lookup:
+        feat_lookup[k] = np.concatenate(feat_lookup[k])
 
     if args.mol_feat != 'emb':
         mol_feats = np.zeros((len(G), len(feat_lookup[list(feat_lookup)[0]])), dtype=np.float32)
@@ -698,6 +714,9 @@ def main(args):
         input_dim = 256
         mol_feats = torch.zeros((len(G), 256))
         feat_lookup = {}
+        
+    if args.concat_mol_feats:
+        input_dim += 2048
     setattr(args, 'input_dim', input_dim)
     diffusion_args['adj_matrix'] = nx.adjacency_matrix(G).toarray()
 
@@ -1016,13 +1035,14 @@ if __name__ == "__main__":
     parser.add_argument('--shuffle', action='store_true')
 
     # model params
-    parser.add_argument('--mol_feat', type=str, default='W', choices=['fp', 
+    parser.add_argument('--mol_feat', type=str, default='W', nargs='+', choices=['fp', 
                                                                       'one_hot', 
                                                                       'ones', 
                                                                       'W', 
                                                                       'emb',
                                                                       'unimol', 
                                                                       'dir'])
+    parser.add_argument('--concat_mol_feats', action='store_true')
     parser.add_argument('--mol_feat_dir', type=str)
     parser.add_argument('--feat_concat_W', action='store_true')
     parser.add_argument('--attn_W', action='store_true')
