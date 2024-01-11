@@ -249,9 +249,25 @@ def featurize_walk(graph, model, dag, proc, mol_feats, feat_lookup={}):
         
 
 
+def idx_partition(data, all_idx, test_size=0.2):
+    assert len(data) == len(all_idx)
+    train_mask = all_idx[:int((1-test_size)*len(data))]
+    test_mask = all_idx[int((1-test_size)*len(data)):]
+    return [data[i] for i in train_mask], [data[i] for i in test_mask]
+
+
+
 def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats, feat_lookup={}):
     dags_copy = deepcopy(dags)
-    if args.test_size:
+    if args.test_seed != -1:
+        random.seed(args.test_seed)
+        all_idx = list(range(len(dags_copy)))
+        random.shuffle(all_idx)
+        dags_copy_train, dags_copy_test = idx_partition(dags_copy, all_idx, args.test_size)
+        norm_props_train, norm_props_test = idx_partition(norm_props, all_idx, args.test_size)
+        props_train, props_test = idx_partition(props, all_idx, args.test_size)
+        train_inds, test_inds = idx_partition(list(range(len(dags_copy))), all_idx, args.test_size)
+    elif args.test_size:
         dags_copy_train, dags_copy_test, norm_props_train, norm_props_test, props_train, props_test, train_inds, test_inds = train_test_split(dags_copy, norm_props, props, list(range(len(dags_copy))), test_size=args.test_size, random_state=42)
     else:
         dags_copy_train, dags_copy_test, norm_props_train, norm_props_test, props_train, props_test, train_inds, test_inds = dags_copy, dags_copy, norm_props, norm_props, props, props, list(range(len(dags_copy))), list(range(len(dags_copy)))
@@ -353,7 +369,9 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats, feat_
     std = mean_and_std[:,1]        
 
     best_maes = [float("inf") for _ in args.property_cols]
+    best_r2s = [float("-inf") for _ in args.property_cols]
     best_avg_mae = float("inf")
+    best_avg_r2 = float("-inf")
     best_epochs = [0 for _ in args.property_cols]
 
     train_feat_cache = {}
@@ -473,8 +491,10 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats, feat_
             breakpoint()
         if not (y_hat == y_hat).all():
             breakpoint()
+        r2s = []
         for i in range(len(mean)):
             r2 = r2_score(y[:,i], y_hat[:,i])
+            r2s.append(r2)
             mae = np.abs(y_hat[:,i]-y[:,i]).mean()
             mse = ((y_hat[:,i]-y[:,i])**2).mean()
 
@@ -489,6 +509,8 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats, feat_
                 best_epoch_r2 = metrics[best_epochs[i]][f'{metric_names[i]}_r^2']
                 best_epoch_mae = metrics[best_epochs[i]][f'{metric_names[i]}_mae']
                 best_epoch_mse = metrics[best_epochs[i]][f'{metric_names[i]}_mse']
+            if r2 > best_r2s[i]:
+                best_r2s[i] = r2
                  
             metric.update({
                 f'{metric_names[i]}_r^2': r2,
@@ -503,11 +525,17 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats, feat_
         avg_mae = np.abs(y_hat-y).mean()
         if avg_mae < best_avg_mae:
             best_avg_mae = avg_mae
-            print(f"epoch {epoch} best avg mae {best_avg_mae}")
+        avg_r2 = np.mean(r2s)
+        if avg_r2 > best_avg_r2:
+            best_avg_r2 = avg_r2
         metric.update({"best_avg_mae": best_avg_mae})
         metric.update({"avg_mae": avg_mae})
-              
-                        
+        metric.update({"avg_best_mae": np.mean(best_maes)})
+        metric.update({"avg_best_r2": np.mean(best_r2s)})
+      
+        print(f"epoch {epoch} avg best mae {np.mean(best_maes)}")        
+        print(f"epoch {epoch} avg best r2 {np.mean(best_r2s)}")        
+                                      
         metrics.append(metric)
         df = pd.DataFrame(metrics)
         df.to_csv(os.path.join(args.logs_folder, 'metrics.csv'))
@@ -1020,6 +1048,7 @@ if __name__ == "__main__":
     parser.add_argument('--augment_dfs', action='store_true')
     parser.add_argument('--augment_order', action='store_true')
     parser.add_argument('--augment_dir', action='store_true')
+    parser.add_argument('--test_seed', default=-1, type=int, help='seed for splitting data')
     parser.add_argument('--test_size', default=0., type=float)
 
     # training params
