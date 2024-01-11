@@ -11,8 +11,8 @@ import time
 import json
 from copy import deepcopy
 from math import factorial
-from torch_geometric.nn.conv import GINEConv, GATConv, GCNConv
-from models.gin_conv import MyGINConv as GINConv
+from torch_geometric.nn.conv import GATConv, GCNConv, TransformerConv, GPSConv
+from models.gnn_conv import MyGINConv as GINConv
 
 
 class DiffusionProcess:
@@ -377,6 +377,7 @@ class Predictor(nn.Module):
                  in_mlp=False,
                  mlp_out=False,
                  dropout_rate=0,
+                 num_transformer_heads=1,
                  **kwargs):
         super().__init__()
         self.num_heads = num_heads
@@ -390,6 +391,7 @@ class Predictor(nn.Module):
         self.do_mlp_out = mlp_out
         self.share_params = share_params
         self.dropout_rate = dropout_rate
+        self.num_transformer_heads = num_transformer_heads
         if act == 'relu':
             act = nn.ReLU()
         elif act == 'sigmoid':
@@ -408,10 +410,10 @@ class Predictor(nn.Module):
                     mlp_in = nn.Sequential(lin_out_1, act, dropout, lin_out_2)
                 else:
                     mlp_in = nn.Sequential(lin_out_1, act, lin_out_2)
-                nn.init.normal_(lin_out_1.weight)
-                nn.init.normal_(lin_out_1.bias)
-                nn.init.normal_(lin_out_2.weight)
-                nn.init.normal_(lin_out_2.bias)                
+                nn.init.normal_(lin_out_1.weight, std=0.1)
+                nn.init.normal_(lin_out_1.bias, std=0.1)
+                nn.init.normal_(lin_out_2.weight, std=0.1)
+                nn.init.normal_(lin_out_2.bias, std=0.1)
                 layer_name = f"in_mlp" if share_params else f"in_mlp_{i}"
                 setattr(self, layer_name, mlp_in)
 
@@ -427,44 +429,58 @@ class Predictor(nn.Module):
                     mlp_out = nn.Sequential(lin_out_1, act, dropout, lin_out_2)
                 else:
                     mlp_out = nn.Sequential(lin_out_1, act, lin_out_2)
-                nn.init.normal_(lin_out_1.weight)
-                nn.init.normal_(lin_out_1.bias)
-                nn.init.normal_(lin_out_2.weight)
-                nn.init.normal_(lin_out_2.bias)  
+                nn.init.normal_(lin_out_1.weight, std=0.1)
+                nn.init.normal_(lin_out_1.bias, std=0.1)
+                nn.init.normal_(lin_out_2.weight, std=0.1)
+                nn.init.normal_(lin_out_2.bias, std=0.1)
                 layer_name = f"mlp_out" if share_params else f"mlp_out_{i}"
                 setattr(self, layer_name, mlp_out)
-
-
+        
         if gnn == 'gin':
             for j in range(1, num_heads+1):
-                if share_params and j < num_heads:
-                    continue
                 input_dim = hidden_dim if self.in_mlp else self.input_dim
-                if gnn == 'gin':
-                    for i in range(1, num_layers+1):
-                        if i > 1: 
-                            input_dim = hidden_dim     
-                        lin_i_1 = nn.Linear(input_dim, hidden_dim)
-                        lin_i_2 = nn.Linear(hidden_dim, hidden_dim)                        
-                        nn.init.normal_(lin_i_1.weight)
-                        nn.init.normal_(lin_i_2.weight)
-                        nn.init.normal_(lin_i_1.bias)
-                        nn.init.normal_(lin_i_2.bias)                                    
-                        # setattr(self, f"gnn_{i}", GATConv(in_channels=-1, out_channels=hidden_dim, edge_dim=1))
-                        if self.dropout_rate:
-                            dropout = nn.Dropout(self.dropout_rate)
-                            mlp = nn.Sequential(lin_i_1, act, dropout, lin_i_2)
-                        else: 
-                            mlp = nn.Sequential(lin_i_1, act, lin_i_2)
-                        layer_name = f"gnn_{i}" if share_params else f"gnn_{i}_{j}"
-                        setattr(self, layer_name, GINConv(mlp, edge_dim=1))               
+                if share_params and j < num_heads:
+                    continue                
+                for i in range(1, num_layers+1):
+                    if i > 1: 
+                        input_dim = hidden_dim     
+                    lin_i_1 = nn.Linear(input_dim, hidden_dim)
+                    lin_i_2 = nn.Linear(hidden_dim, hidden_dim)                        
+                    nn.init.normal_(lin_i_1.weight)
+                    nn.init.normal_(lin_i_2.weight)
+                    nn.init.normal_(lin_i_1.bias)
+                    nn.init.normal_(lin_i_2.bias)                                    
+                    # setattr(self, f"gnn_{i}", GATConv(in_channels=-1, out_channels=hidden_dim, edge_dim=1))
+                    if self.dropout_rate:
+                        dropout = nn.Dropout(self.dropout_rate)
+                        mlp = nn.Sequential(lin_i_1, act, dropout, lin_i_2)
+                    else: 
+                        mlp = nn.Sequential(lin_i_1, act, lin_i_2)
+                    layer_name = f"gnn_{i}" if share_params else f"gnn_{i}_{j}"
+                    setattr(self, layer_name, GINConv(mlp, edge_dim=1))               
         elif gnn in ['gat', 'gcn']:
             layer_name = {'gat': GATConv, 'gcn': GCNConv}
             if share_params:
                 setattr(self, f"gnn_conv", layer_name[gnn](input_dim, hidden_channels=hidden_dim, num_layers=num_layers, out_channels=hidden_dim))
             else:
                 for j in range(1, num_heads+1):
+                    input_dim = hidden_dim if self.in_mlp else self.input_dim
                     setattr(self, f"gnn_conv_{j}", layer_name[gnn](input_dim, hidden_channels=hidden_dim, num_layers=num_layers, out_channels=hidden_dim))
+        elif gnn in ['transformerconv', 'gpsconv']:
+            for j in range(1, num_heads+1):
+                input_dim = hidden_dim if self.in_mlp else self.input_dim
+                if share_params and j < num_heads:
+                    continue
+                for i in range(1, num_layers+1):
+                    if i > 1: 
+                        input_dim = hidden_dim              
+                    layer_name = f"gnn_{i}" if share_params else f"gnn_{i}_{j}"
+                    if gnn == 'transformerconv':
+                        setattr(self, layer_name, TransformerConv(input_dim, hidden_dim//self.num_transformer_heads, heads=self.num_transformer_heads, dropout=self.dropout_rate))
+                    elif gnn == 'gpsconv':                
+                        conv = TransformerConv(input_dim, hidden_dim//self.num_transformer_heads, heads=self.num_transformer_heads, dropout=self.dropout_rate)
+                        setattr(self, layer_name, GPSConv(input_dim, conv=conv, heads=self.num_transformer_heads, dropout=self.dropout_rate))
+                            
         else:
             raise NotImplementedError
                       
@@ -514,6 +530,31 @@ class Predictor(nn.Module):
                     if self.do_mlp_out:
                         head_outs[i-1] = getattr(self, f"mlp_out_{i}")(head_outs[i-1])
                     props.append(getattr(self, f"out_mlp_{i}")(head_outs[i-1]))
+        elif self.gnn in ['transformerconv', 'gpsconv']:
+            head_outs = []
+            for j in range(1, self.num_heads+1):
+                if self.share_params and j < self.num_heads:
+                    continue
+                X_out = X.clone()
+                if self.in_mlp:
+                    X_out = getattr(self, "in_mlp" if self.share_params else f"in_mlp_{j}")(X_out)
+                for i in range(1, self.num_layers+1):
+                    layer_name = f"gnn_{i}" if self.share_params else f"gnn_{i}_{j}"
+                    X_out = getattr(self, layer_name)(X_out, edge_index)
+                head_outs.append(X_out)
+            if self.share_params:
+                assert len(head_outs) == 1
+                X = head_outs[0]
+                if self.do_mlp_out:
+                    X = getattr(self, "mlp_out")(X)
+                props = [getattr(self, f"out_mlp_{i}")(X) for i in range(1,self.num_heads+1)] 
+            else:
+                assert len(head_outs) == self.num_heads
+                props = []                
+                for i in range(1,self.num_heads+1):
+                    if self.do_mlp_out:
+                        head_outs[i-1] = getattr(self, f"mlp_out_{i}")(head_outs[i-1])
+                    props.append(getattr(self, f"out_mlp_{i}")(head_outs[i-1]))                    
         elif self.gnn in ['gat', 'gcn']:
             if self.share_params:
                 if self.in_mlp:
@@ -615,7 +656,7 @@ def diffuse(graph, log_folder, **diff_args):
     else:
         raise
     history = []
-    T = 20
+    T = 10
     best_loss = float("inf")
     for i in range(diff_args['num_epochs']):
         graph.reset()
@@ -644,6 +685,7 @@ def diffuse(graph, log_folder, **diff_args):
         ax.axhline(y=min(history), color='red')
         ax.set_title(f"Loss over {diff_args['num_epochs']} epochs, {T} steps each")
         ax.set_ylabel(f"MSE Loss of X^t")
+        ax.set_yscale('log')
         ax.set_xlabel('(Epoch, t)')
         plot_file = os.path.join(log_folder, 'L_loss.png')
         fig.savefig(plot_file)

@@ -550,6 +550,8 @@ def bfs_traverse(G, graph):
             id += 1
             prev_node.add_child((cur_node, i))
             assert len(list(G[prev_node.val][cur])) == 1
+            # if i is None:
+            #     breakpoint()
             conn.append((prev_node, cur_node, i))
             conn.append((cur_node, prev_node, i))
             vis[cur] = True
@@ -563,7 +565,7 @@ def bfs_traverse(G, graph):
     return root_node, conn   
 
 
-def dfs_traverse(walk):
+def dfs_traverse(walk, loop_back=False):
     """
     walk can be a list, e.g. [L3, S32, S20[->S1,->S1], S32, >L3]
     or a graph, e.g. 
@@ -583,8 +585,8 @@ def dfs_traverse(walk):
     prev_node = None
     root_node = None
     conn = []
-    id = 0
-    if walk[len(walk)-1] != walk[0]: # come back to origin
+    id = 0    
+    if loop_back and walk[len(walk)-1] != walk[0]: # come back to origin
         walk.append(walk[0])    
     for i in range(len(walk)-1):
         if '[' in walk[i]:
@@ -621,13 +623,14 @@ def dfs_traverse(walk):
 
         root_node = root_node or prev_node
 
-    conn.append((root_node, prev_node))
-    conn.append((prev_node, root_node))
+    if loop_back:
+        conn.append((root_node, prev_node))
+        conn.append((prev_node, root_node))
 
     return root_node, conn
 
 
-def traverse_dfs(walk, graph):
+def traverse_dfs(walk, graph, loop_back=False):
     conn = []
     start = list(walk.nodes)[0]
     vis = [False for n in walk.nodes()]
@@ -643,7 +646,7 @@ def traverse_dfs(walk, graph):
             if vis[j]:
                 if j:
                     breakpoint()            
-                else: # cycle back to root
+                elif loop_back: # cycle back to root
                     e = walk[cur][j]['e'] 
                     e_cyc = find_e(graph, nodes[cur].val, nodes[j].val, e)       
                     nodes[cur].add_child((nodes[j], e))
@@ -748,13 +751,13 @@ def verify_edge_conn(graph, conn, r_lookup):
 
 
 
-def verify_walk(r_lookup, graph, walk):
+def verify_walk(r_lookup, graph, walk, loop_back=False):
     # r_lookup: dict(red group id: atoms)
     # check all edges exist
     
     try:         
         if isinstance(walk, nx.Graph):
-            root, edge_conn = traverse_dfs(walk, graph)
+            root, edge_conn = traverse_dfs(walk, graph, loop_back=loop_back)
             used_reds = defaultdict(set)
             for a, b, i in edge_conn:
                 red_j1 = graph[a.val][b.val][i]['r_grp_1']
@@ -769,7 +772,7 @@ def verify_walk(r_lookup, graph, walk):
                 used_reds[b.id] |= set(red_j2)            
             print("pass!")
         elif isinstance(walk, list):
-            root, conn = dfs_traverse(walk)
+            root, conn = dfs_traverse(walk, loop_back=loop_back)
             """
             if no edge info is provided, this is a terrible code to guess possible connections
             so that no red atom is every used twice
@@ -787,7 +790,7 @@ def verify_walk(r_lookup, graph, walk):
             copies at each step
             """    
             walk = [(str(a.id), str(b.id), a.val.split(':')[0], b.val.split(':')[0]) for (a,b) in conn]
-            chosen_edges = walk_enumerate_mols(walk, graph, mols)
+            chosen_edges = walk_enumerate_mols(walk, graph, mols, loop_back=loop_back)
             conn = [(a,b,e) for (a,b), e in zip(conn, chosen_edges)]
             edge_conn = verify_edge_conn(graph, conn, r_lookup)
         else: 
@@ -809,7 +812,9 @@ def is_novel(dags, root):
 def mol2fp(mol,nBits=2048):
     # black_inds = [a.GetIdx() for a in mol.GetAtoms() if not a.GetBoolProp('r')]
     # mol_extract = extract_subgraph(mol, black_inds)[1]
+
     # Chem.SanitizeMol(mol_extract)
+   
     # fp = AllChem.GetMorganFingerprintAsBitVect(mol_extract, 2, nBits) 
     fp = AllChem.GetMorganFingerprintAsBitVect(mol, 2, nBits) 
     arr = np.zeros((1,))

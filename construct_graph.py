@@ -68,7 +68,7 @@ if __name__ == "__main__":
                 grps = extract_chain(walk)
             # print(f"walk: {walk}, grps: {grps}")
             try:
-                root, conn = verify_walk(r_lookup, graph, grps)
+                root, conn = verify_walk(r_lookup, graph, grps, loop_back=True)
                 if args.extract_edges and args.save_edges_dir:
                     os.makedirs(args.save_edges_dir, exist_ok=True)
                     save_file = os.path.join(args.save_edges_dir, f'{name}.edgelist')
@@ -78,7 +78,7 @@ if __name__ == "__main__":
                     files.add(save_file)
             except Exception as e:
                 breakpoint()
-                root, conn = verify_walk(r_lookup, graph, grps)
+                root, conn = verify_walk(r_lookup, graph, grps, loop_back=True)
                 if type(e) == KeyError:
                     print(e)
                 else:

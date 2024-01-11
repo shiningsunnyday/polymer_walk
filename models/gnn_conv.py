@@ -1,4 +1,5 @@
 from torch_geometric.nn.conv import GINConv
+from torch_geometric.nn.conv import TransformerConv
 from typing import Callable, Union
 from torch import Tensor
 from torch_geometric.typing import OptPairTensor, Adj, OptTensor, Size
