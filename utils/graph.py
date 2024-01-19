@@ -13,6 +13,8 @@ sys.path.append('/home/msun415/3D-motif-grammar/src/utils')
 sys.path.append('/home/msun415/3D-motif-grammar/src')
 sys.path.append('/home/msun415/3D-motif-grammar')
 from walk import walk_enumerate_mols
+# from retro_star.api import planner
+
 
 """FOR GROUP CONTRIBUTION"""
 # mols = load_mols('data/datasets/group-contrib/all_groups')
@@ -25,12 +27,22 @@ from walk import walk_enumerate_mols
 # mols = load_mols('data/datasets/pu_groups/all_groups')
 # annotate_extra(mols, 'data/datasets/pu_groups/all_groups/all_extra.txt')
 
-# mols = load_mols('data/datasets/lipophilicity/all_groups')
-# annotate_extra(mols, 'data/datasets/lipophilicity/all_groups/all_extra.txt')
+"""FOR LIPO"""
+mols = load_mols('data/datasets/lipophilicity/all_groups')
+annotate_extra(mols, 'data/datasets/lipophilicity/all_groups/all_extra.txt')
 
 """FOR PERMEABILITY"""
-mols = load_mols('data/datasets/datasetA_permeability/all_groups')
-annotate_extra(mols, 'data/datasets/datasetA_permeability/all_groups/all_extra.txt')
+# mols = load_mols('data/datasets/datasetA_permeability/all_groups')
+# annotate_extra(mols, 'data/datasets/datasetA_permeability/all_groups/all_extra.txt')
+
+"""FOR HOPV"""
+# mols = load_mols('data/datasets/hopv/all_groups')
+# annotate_extra(mols, 'data/datasets/hopv/all_groups/all_extra.txt')
+
+"""FOR PTC"""
+# mols = load_mols('data/datasets/ptc/all_groups')
+# annotate_extra(mols, 'data/datasets/ptc/all_groups/all_extra.txt')
+
 
 class Node:
     def __init__(self, parent, children, val, id, side_chain=False):        
@@ -246,10 +258,13 @@ def substruct_matches(mol, subgraph):
     if not res:
         # Chem.Kekulize(mol_copy)
         # res = list(map(list, mol_copy.GetSubstructMatches(subgraph)))
-        suppl = Chem.ResonanceMolSupplier(mol_copy, Chem.KEKULE_ALL)
+        try:
+            suppl = Chem.ResonanceMolSupplier(mol_copy, Chem.KEKULE_ALL)
+        except:
+            return res
         for supp in suppl:
             if supp is None:
-                breakpoint()
+                continue
             res += list(map(list, supp.GetSubstructMatches(subgraph)))
     return res
     
@@ -588,7 +603,11 @@ def dfs_traverse(walk, loop_back=False):
     id = 0    
     if loop_back and walk[len(walk)-1] != walk[0]: # come back to origin
         walk.append(walk[0])    
-    for i in range(len(walk)-1):
+    if loop_back:
+        walk_len = len(walk)-1
+    else:
+        walk_len = len(walk)
+    for i in range(walk_len):
         if '[' in walk[i]:
             start = walk[i].find('[')
             assert ']' == walk[i][-1]
@@ -623,7 +642,7 @@ def dfs_traverse(walk, loop_back=False):
 
         root_node = root_node or prev_node
 
-    if loop_back:
+    if loop_back: # come back to origin
         conn.append((root_node, prev_node))
         conn.append((prev_node, root_node))
 
@@ -772,25 +791,21 @@ def verify_walk(r_lookup, graph, walk, loop_back=False):
                 used_reds[b.id] |= set(red_j2)            
             print("pass!")
         elif isinstance(walk, list):
-            root, conn = dfs_traverse(walk, loop_back=loop_back)
-            """
-            if no edge info is provided, this is a terrible code to guess possible connections
-            so that no red atom is every used twice
-            rather than exhausitively enumerate the product of all connections, try num_tries
-            """            
+            root, conn = dfs_traverse(walk, loop_back=loop_back)       
             for a, b in conn:
                 if b.val not in graph[a.val]:
-                    raise KeyError(f"{a.val} {b.val} not connected")                
-            
+                    raise KeyError(f"{a.val} {b.val} not connected")                            
             # edge_conn = guess_edge_conn(graph, conn[::-2], r_lookup)
             # if edge_conn is None:
             #     raise RuntimeError(walk)
             """
-            TODO: instead, write code that tracks all possible connections, then prunes the isomorphic
+            tracks all possible connections, then prunes the isomorphic
             copies at each step
             """    
             walk = [(str(a.id), str(b.id), a.val.split(':')[0], b.val.split(':')[0]) for (a,b) in conn]
-            chosen_edges = walk_enumerate_mols(walk, graph, mols, loop_back=loop_back)
+            chosen_edges, new_mol = walk_enumerate_mols(walk, graph, mols, loop_back=loop_back)
+            assert new_mol is not None
+            root.smiles = Chem.MolToSmiles(new_mol)
             conn = [(a,b,e) for (a,b), e in zip(conn, chosen_edges)]
             edge_conn = verify_edge_conn(graph, conn, r_lookup)
         else: 

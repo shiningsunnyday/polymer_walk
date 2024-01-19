@@ -5,6 +5,10 @@ from utils import *
 import networkx as nx
 import torch.nn as nn
 import torch
+import os
+if 'TORCH_SEED' in os.environ:    
+    seed = int(os.environ['TORCH_SEED'])
+    torch.manual_seed(seed)
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import time
@@ -378,6 +382,7 @@ class Predictor(nn.Module):
                  mlp_out=False,
                  dropout_rate=0,
                  num_transformer_heads=1,
+                 init='normal',
                  **kwargs):
         super().__init__()
         self.num_heads = num_heads
@@ -392,6 +397,7 @@ class Predictor(nn.Module):
         self.share_params = share_params
         self.dropout_rate = dropout_rate
         self.num_transformer_heads = num_transformer_heads
+        self.init = init
         if act == 'relu':
             act = nn.ReLU()
         elif act == 'sigmoid':
@@ -410,10 +416,16 @@ class Predictor(nn.Module):
                     mlp_in = nn.Sequential(lin_out_1, act, dropout, lin_out_2)
                 else:
                     mlp_in = nn.Sequential(lin_out_1, act, lin_out_2)
-                nn.init.normal_(lin_out_1.weight, std=0.1)
-                nn.init.normal_(lin_out_1.bias, std=0.1)
-                nn.init.normal_(lin_out_2.weight, std=0.1)
-                nn.init.normal_(lin_out_2.bias, std=0.1)
+                if self.init == 'normal':
+                    nn.init.normal_(lin_out_1.weight)
+                    nn.init.normal_(lin_out_1.bias)
+                    nn.init.normal_(lin_out_2.weight)
+                    nn.init.normal_(lin_out_2.bias)
+                elif self.init == 'zeros':
+                    nn.init.zeros_(lin_out_1.weight)
+                    nn.init.zeros_(lin_out_1.bias)
+                    nn.init.zeros_(lin_out_2.weight)
+                    nn.init.zeros_(lin_out_2.bias)                    
                 layer_name = f"in_mlp" if share_params else f"in_mlp_{i}"
                 setattr(self, layer_name, mlp_in)
 
@@ -429,10 +441,16 @@ class Predictor(nn.Module):
                     mlp_out = nn.Sequential(lin_out_1, act, dropout, lin_out_2)
                 else:
                     mlp_out = nn.Sequential(lin_out_1, act, lin_out_2)
-                nn.init.normal_(lin_out_1.weight, std=0.1)
-                nn.init.normal_(lin_out_1.bias, std=0.1)
-                nn.init.normal_(lin_out_2.weight, std=0.1)
-                nn.init.normal_(lin_out_2.bias, std=0.1)
+                if self.init == 'normal':
+                    nn.init.normal_(lin_out_1.weight)
+                    nn.init.normal_(lin_out_1.bias)
+                    nn.init.normal_(lin_out_2.weight)
+                    nn.init.normal_(lin_out_2.bias)
+                elif self.init == 'zeros':
+                    nn.init.zeros_(lin_out_1.weight)
+                    nn.init.zeros_(lin_out_1.bias)
+                    nn.init.zeros_(lin_out_2.weight)
+                    nn.init.zeros_(lin_out_2.bias)                     
                 layer_name = f"mlp_out" if share_params else f"mlp_out_{i}"
                 setattr(self, layer_name, mlp_out)
         
@@ -446,10 +464,16 @@ class Predictor(nn.Module):
                         input_dim = hidden_dim     
                     lin_i_1 = nn.Linear(input_dim, hidden_dim)
                     lin_i_2 = nn.Linear(hidden_dim, hidden_dim)                        
-                    nn.init.normal_(lin_i_1.weight)
-                    nn.init.normal_(lin_i_2.weight)
-                    nn.init.normal_(lin_i_1.bias)
-                    nn.init.normal_(lin_i_2.bias)                                    
+                    if self.init == 'normal':
+                        nn.init.normal_(lin_i_1.weight)
+                        nn.init.normal_(lin_i_1.bias)
+                        nn.init.normal_(lin_i_2.weight)
+                        nn.init.normal_(lin_i_2.bias)                                   
+                    elif self.init == 'zeros':
+                        nn.init.zeros_(lin_i_1.weight)
+                        nn.init.zeros_(lin_i_1.bias)
+                        nn.init.zeros_(lin_i_2.weight)
+                        nn.init.zeros_(lin_i_2.bias)                         
                     # setattr(self, f"gnn_{i}", GATConv(in_channels=-1, out_channels=hidden_dim, edge_dim=1))
                     if self.dropout_rate:
                         dropout = nn.Dropout(self.dropout_rate)
@@ -490,18 +514,25 @@ class Predictor(nn.Module):
             lin_out_2 = nn.Linear(hidden_dim, 1)
             if self.dropout_rate:
                 dropout = nn.Dropout(self.dropout_rate)
-                mlp_out = nn.Sequential(lin_out_1, act, dropout, lin_out_2)
+                head_layers = [lin_out_1, act, dropout, lin_out_2]                
             else:
-                mlp_out = nn.Sequential(lin_out_1, act, lin_out_2)
-            nn.init.normal_(lin_out_1.weight)
-            nn.init.normal_(lin_out_1.bias)
-            nn.init.normal_(lin_out_2.weight)
-            nn.init.normal_(lin_out_2.bias)  
+                head_layers = [lin_out_1, act, lin_out_2]
+            mlp_out = nn.Sequential(*head_layers)
+            if self.init == 'normal':
+                nn.init.normal_(lin_out_1.weight)
+                nn.init.normal_(lin_out_1.bias)
+                nn.init.normal_(lin_out_2.weight)
+                nn.init.normal_(lin_out_2.bias)
+            elif self.init == 'zeros':
+                nn.init.zeros_(lin_out_1.weight)
+                nn.init.zeros_(lin_out_1.bias)
+                nn.init.zeros_(lin_out_2.weight)
+                nn.init.zeros_(lin_out_2.bias)                 
             setattr(self, f"out_mlp_{i}", mlp_out)
         
         
 
-    def forward(self, X, edge_index, edge_weights):  
+    def forward(self, X, edge_index, edge_weights, return_feats=False):  
         # node_mask = torch.zeros((X.shape[0],))==1
         # # node_mask = torch.ones((X.shape[0], 1))
         # node_mask[edge_index.flatten()] = True
@@ -579,8 +610,13 @@ class Predictor(nn.Module):
                     props.append(getattr(self, f"out_mlp_{i}")(head_outs[i-1]))
         else:
             raise
-        
-        return torch.cat(props, dim=-1)
+
+        out = torch.cat(props, dim=-1)
+        feats = X if self.share_params else head_outs
+        if return_feats:
+            return out, feats
+        else:
+            return out
     
 
 def state_to_probs(state, adj=None):
@@ -591,11 +627,13 @@ def state_to_probs(state, adj=None):
         # return F.softmax(state)
         return state/state.sum(axis=-1)
     else:
-        if adj is not None:
-            state[:, adj!=0.] = 1.
-            return state/state.sum(axis=-1)
-        else:
-            breakpoint()
+        return state
+        # print(f"all probs 0")
+        # if adj is not None:
+        #     state[:, adj!=0.] = 1.
+        #     return state/state.sum(axis=-1)
+        # else:
+        #     breakpoint()
     state = state - state.min(-1, True).values
     return state/state.sum(axis=-1)
 
@@ -791,7 +829,14 @@ def extract_sides(x):
 
 
 def check_colon_order(all_nodes, traj, after):
-    ind = int(all_nodes[after].split(':')[-1])
+    """
+    For example, what if we have G2->G2:1->G2:1?
+    Or G2->G2? These are both cases of bad colon order, and should be avoided by design.
+    """   
+    if ':' in all_nodes[after]:
+        ind = int(all_nodes[after].split(':')[-1])
+    else:
+        ind = 0
     bad_ind = False
     grp = all_nodes[after].split(':')[0]
     prev_indices = [all_nodes[extract(x)] for x in traj if grp in all_nodes[extract(x)]]
@@ -830,8 +875,10 @@ def append_traj(traj, after):
     # convert L3, S21, L3 into L3[->S21]
     # convert L3[->P28,->S20], S21, L3 into L3[->P28,->S20,->S21]
     if occur.sum():
-        if len(occur) == 1 or occur.sum() != 1: return []
-        if str(after) != traj[-2].split('[')[0]: return []
+        if len(occur) == 1 or occur.sum() != 1: 
+            return []    
+        if len(traj) < 2 or str(after) != traj[-2].split('[')[0]: 
+            return []
         # print("before", traj, after)
         if '[' in traj[-2]:
             if '[' in traj[-1]:
@@ -859,7 +906,7 @@ def append_traj(traj, after):
 
 
 
-def sample_walk(n, G, graph, model, all_nodes):
+def sample_walk(n, G, graph, model, all_nodes, loop_back=True):
     N = len(G)     
     context = torch.zeros((1, N), dtype=torch.float64)
     start = graph.index_lookup[n]
@@ -875,35 +922,51 @@ def sample_walk(n, G, graph, model, all_nodes):
         update, context = model(state, context, t)
         if not (state>=0).all():
             breakpoint()
+                         
         state = state_to_probs(state+update, graph.adj[cur_node_ind])
-        t += 1
         state_numpy = state.detach().flatten().numpy()
+        for i in range(len(G)):
+            if len(traj) and extract(traj[-1]) == i: # can't loop back to itself if nothing else in between
+                state_numpy[i] = 0.
+            if check_colon_order(all_nodes, traj, i):
+                state_numpy[i] = 0.
+
+        if state_numpy.max() <= 0.1: # set a threshold >= 0.
+            if not loop_back:
+                good = True
+            break    
+        t += 1
+           
+        state_numpy = state_numpy/state_numpy.sum()
         after = np.random.choice(len(state_numpy), p=state_numpy)        
         cur_node_ind = after
         # try:
         #     print(f"post state {get_repr(state)}, context {get_repr(context)}, t {t}")
         #     print(f"sampled {after} with prob {state_numpy[after]}")
         # except:
-        #     breakpoint()
-        if ':' in all_nodes[after]:
-            bad_ind = check_colon_order(all_nodes, traj, after)
-            if bad_ind: break
-        
+        #     breakpoint()                    
         state = torch.zeros((1, len(G)), dtype=torch.float64)
         state[0, after] = 1.
 
-        
+        # self-loop, not allowed!
         if extract(traj[-1]) == after:
+            breakpoint()
             traj.append(str(after))
             break
-        if after == start:
+        
+        # loop back, done!
+        if loop_back and after == start:
             traj.append(str(after))
             good = True
             break
-        
-        traj = append_traj(traj, after)
-        if not traj:
+    
+        traj_after = append_traj(traj, after)
+        if loop_back and not traj_after:
             break
+        if not loop_back and not traj_after:
+            good = True
+            break
+            
 
 
     return traj, good

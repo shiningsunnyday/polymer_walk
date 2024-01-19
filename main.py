@@ -12,10 +12,12 @@ from torch.utils.data import Dataset
 from torch_geometric.loader import DataLoader
 from torch_geometric.data import Data
 from torch_geometric.nn import aggr
+import torch.nn.functional as F
+from torch.optim.lr_scheduler import MultiStepLR
 import matplotlib.pyplot as plt
 from copy import deepcopy
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import r2_score
+from sklearn.metrics import r2_score, roc_auc_score
 import pandas as pd
 from tqdm import tqdm
 
@@ -93,15 +95,18 @@ def train_sgd(args,
                 assert node_attr.requires_grad == False
             X = node_attr        
             start_pred_time = time.time()                            
-            prop = do_predict(predictor, X, edge_index, edge_attr, cuda=args.cuda)                                          
+            if args.plot_feats:
+                prop, feats = do_predict(predictor, X, edge_index, edge_attr, cuda=args.cuda, return_feats=args.plot_feats)                
+            else:
+                prop = do_predict(predictor, X, edge_index, edge_attr, cuda=args.cuda)
+            if args.task == 'classification':
+                prop = F.sigmoid(prop)            
             loss = loss_func(prop, norm_props_train[ind])
             train_loss_history.append(loss.item())     
             loss_backward_time = time.time()
             loss.backward(retain_graph=True)
             if not (loss == loss).all():
-                breakpoint() 
-                   
-        
+                breakpoint()                            
         if args.augment_dfs:
             assert args.num_accumulation_steps == 1
             for p in all_params:
@@ -138,6 +143,7 @@ def eval_sgd(args,
              std):             
     loss_history = []
     test_preds = []
+    test_feats = []
     with torch.no_grad():
         for i in tqdm(range(len(dags_copy_test))):     
             assert len(all_procs[i]) == 1
@@ -151,11 +157,26 @@ def eval_sgd(args,
                     node_attr, edge_index, edge_attr = featurize_walk(graph, model, dags_copy_test[i], all_procs[i][0], mol_feats, feat_lookup)
                     test_feat_cache[i] = (node_attr, edge_index, edge_attr)                
             X = node_attr
-            prop = do_predict(predictor, X, edge_index, edge_attr, cuda=args.cuda)                          
+            if args.plot_feats:
+                prop, feats = do_predict(predictor, X, edge_index, edge_attr, cuda=args.cuda, return_feats=args.plot_feats)
+            else:
+                prop = do_predict(predictor, X, edge_index, edge_attr, cuda=args.cuda)
+            if args.plot_feats:
+                feats = torch.mean(feats, dim=0)
+                test_feats.append(feats)
+            if args.task == 'classification':
+                prop = F.sigmoid(prop)                        
             loss = loss_func(prop, norm_props_test[i])            
             loss_history.append(loss.item())
-            test_preds.append((prop.cpu()*std+mean).numpy())    
-    return test_preds, loss_history
+            if 'HOPV' in args.walks_file:
+                test_preds.append(prop.cpu().numpy())
+            else:    
+                test_preds.append((prop.cpu()*std+mean).numpy())    
+    if args.plot_feats:
+        test_feats = torch.stack(test_feats, dim=0)
+        return test_preds, loss_history, test_feats
+    else:
+        return test_preds, loss_history
 
 
 
@@ -171,9 +192,14 @@ def eval_batch(args,
         for batch in tqdm(batch_loader):
             X, edge_index, edge_attr, props_y = batch.x, batch.edge_index, batch.edge_attr, batch.y
             prop = do_predict(predictor, X, edge_index, edge_attr, batch=batch.batch, cuda=args.cuda)                          
+            if args.task == 'classification':
+                prop = F.sigmoid(prop)                
             loss = loss_func(prop, props_y)            
             loss_history = np.concatenate((loss_history, torch.atleast_2d(loss).numpy().mean(axis=-1, keepdims=True)), axis=0)
-            test_preds = np.concatenate((test_preds, (prop.cpu()*std+mean).numpy()), axis=0)
+            if 'HOPV' in args.walks_file:
+                test_preds = np.concatenate((test_preds, prop.cpu().numpy()), axis=0)
+            else:
+                test_preds = np.concatenate((test_preds, (prop.cpu()*std+mean).numpy()), axis=0)
     return test_preds, loss_history    
 
 
@@ -191,6 +217,8 @@ def train_batch(args,
         X, edge_index, edge_attr, props_y = batch.x, batch.edge_index, batch.edge_attr, batch.y
         start_pred_time = time.time()                
         prop = do_predict(predictor, X, edge_index, edge_attr, batch=batch.batch, cuda=args.cuda)                                          
+        if args.task == 'classification':
+            prop = F.sigmoid(prop)            
         loss = loss_func(prop, props_y)        
         train_loss_history = np.concatenate((train_loss_history, torch.atleast_2d(loss).detach().numpy().mean(axis=-1, keepdims=True)), axis=0)        
         loss_backward_time = time.time()
@@ -243,7 +271,19 @@ def featurize_walk(graph, model, dag, proc, mol_feats, feat_lookup={}):
         edge_index = torch.tensor([[0], [0]], dtype=torch.int64) # trivial self-connection for gnn
         edge_attr = torch.tensor([[1.]])
     if hasattr(dag, 'smiles'):
-        smiles_fp = torch.as_tensor(mol2fp(Chem.MolFromSmiles(dag.smiles)), dtype=torch.float32)
+        dag_mol = Chem.MolFromSmiles(dag.smiles)
+        # if dag_mol is None: # try smarts
+        #     dag_mol = Chem.MolFromSmarts(dag.smiles)        
+        # else:
+        #     dag_mol = Chem.AddHs(dag_mol)  
+        # try:
+        #     Chem.SanitizeMol(dag_mol)          
+        #     if dag_mol is None:
+        #         breakpoint()
+        #     smiles_fp = torch.as_tensor(mol2fp(dag_mol), dtype=torch.float32)
+        # except:
+        #     smiles_fp = torch.zeros((2048,), dtype=torch.float32)
+        smiles_fp = torch.as_tensor(mol2fp(dag_mol), dtype=torch.float32)
         node_attr = torch.concat((node_attr, torch.tile(smiles_fp, (node_attr.shape[0],1))), -1)
     return node_attr, edge_index, edge_attr
         
@@ -253,8 +293,11 @@ def idx_partition(data, all_idx, test_size=0.2):
     assert len(data) == len(all_idx)
     train_mask = all_idx[:int((1-test_size)*len(data))]
     test_mask = all_idx[int((1-test_size)*len(data)):]
-    return [data[i] for i in train_mask], [data[i] for i in test_mask]
-
+    train, test = [data[i] for i in train_mask], [data[i] for i in test_mask]
+    if isinstance(data, torch.Tensor):
+        train = torch.stack(train)
+        test = torch.stack(test)
+    return train, test
 
 
 def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats, feat_lookup={}):
@@ -263,6 +306,10 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats, feat_
         random.seed(args.test_seed)
         all_idx = list(range(len(dags_copy)))
         random.shuffle(all_idx)
+        idx_train, idx_test = idx_partition(all_idx, all_idx, args.test_size)
+        with open(os.path.join(args.logs_folder, 'test_idx.txt'), 'w+') as f:
+            for idx in idx_test:
+                f.write(f"{idx}\n")
         dags_copy_train, dags_copy_test = idx_partition(dags_copy, all_idx, args.test_size)
         norm_props_train, norm_props_test = idx_partition(norm_props, all_idx, args.test_size)
         props_train, props_test = idx_partition(props, all_idx, args.test_size)
@@ -322,7 +369,8 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats, feat_
                           in_mlp=args.in_mlp,
                           mlp_out=args.mlp_out,
                           dropout_rate=args.dropout_rate,
-                          num_transformer_heads=args.num_transformer_heads)
+                          num_transformer_heads=args.num_transformer_heads,
+                          init=args.init)
     if args.predictor_ckpt:
         state = torch.load(args.predictor_ckpt)
         predictor.load_state_dict(state, strict=True)
@@ -356,6 +404,8 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats, feat_
         opt = torch.optim.Adam(all_params, lr=args.lr)
     else:
         raise
+    if args.lr_schedule:
+        scheduler = MultiStepLR(opt, milestones=args.lr_schedule, gamma=args.gamma)        
     
     loss_func = nn.MSELoss()   
     history = []
@@ -368,10 +418,16 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats, feat_
     mean = mean_and_std[:,0]
     std = mean_and_std[:,1]        
 
-    best_maes = [float("inf") for _ in args.property_cols]
-    best_r2s = [float("-inf") for _ in args.property_cols]
-    best_avg_mae = float("inf")
-    best_avg_r2 = float("-inf")
+    if args.task == 'regression':
+        best_maes = [float("inf") for _ in args.property_cols]
+        best_r2s = [float("-inf") for _ in args.property_cols]
+        best_avg_mae = float("inf")
+        best_avg_r2 = float("-inf")
+    else:
+        best_accs = [float("-inf") for _ in args.property_cols]
+        best_aucs = [float("-inf") for _ in args.property_cols]
+        best_avg_acc = float("-inf")
+        best_avg_auc = float("-inf")
     best_epochs = [0 for _ in args.property_cols]
 
     train_feat_cache = {}
@@ -402,7 +458,15 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats, feat_
                                     batch_size=args.batch_size,
                                     num_workers=args.num_workers,
                                     prefetch_factor=args.prefetch_factor if args.prefetch_factor else None)
-    loss_func = nn.MSELoss(reduce=args.batch_size==1)
+
+    """
+    MSELoss if regression
+    CrossEntropy if classification
+    """
+    if 'PTC' in args.walks_file:    
+        loss_func = nn.BCELoss()
+    else:
+        loss_func = nn.MSELoss(reduce=args.batch_size==1)
     for epoch in range(args.num_epochs):        
         # compute edge control weighted adj matrix via model inference    
         predictor.train()
@@ -434,23 +498,26 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats, feat_
                                             loss_func,
                                             train_batch_loader)
 
-
         graph.reset()
         predictor.eval()
         if args.batch_size == 1:
-            test_preds, loss_history = eval_sgd(args,
-                                                model,
-                                                graph,
-                                                predictor,
-                                                loss_func,
-                                                mol_feats,
-                                                feat_lookup,
-                                                norm_props_test,
-                                                dags_copy_test,
-                                                test_feat_cache,
-                                                all_procs_test, 
-                                                mean, 
-                                                std)
+            res = eval_sgd(args,
+                            model,
+                            graph,
+                            predictor,
+                            loss_func,
+                            mol_feats,
+                            feat_lookup,
+                            norm_props_test,
+                            dags_copy_test,
+                            test_feat_cache,
+                            all_procs_test, 
+                            mean, 
+                            std)
+            if args.plot_feats:
+                test_preds, loss_history, test_feats = res
+            else:
+                test_preds, loss_history = res
         else:            
             test_preds, loss_history = eval_batch(args,
                                                 predictor,
@@ -458,83 +525,134 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats, feat_
                                                 eval_batch_loader,
                                                 mean,
                                                 std)
-
+        if args.lr_schedule:
+            scheduler.step()            
         if args.batch_size == 1 and args.feat_cache and not os.path.exists(args.feat_cache):
             pickle.dump((train_feat_cache, test_feat_cache), open(args.feat_cache, 'wb+'))
-
         if np.mean(loss_history) < best_loss:
             best_loss = np.mean(loss_history)
             print(f"best_loss epoch {epoch}", best_loss)
             torch.save(predictor.state_dict(), os.path.join(args.logs_folder, f'predictor_ckpt_{best_loss}.pt'))
             if args.update_grammar:
                 torch.save(model.state_dict(), os.path.join(args.logs_folder, f'grammar_ckpt_{best_loss}.pt'))
+            if args.plot_feats:
+                torch.save(test_feats, os.path.join(args.logs_folder, f'test_feats_{best_loss}.pt'))
             
         history.append(np.mean(loss_history))
         train_history.append(np.mean(train_loss_history))        
         y_hat = np.array(test_preds)
-        y = np.array(props_test)
+        if 'HOPV' in args.walks_file:
+            y = np.array(norm_props_test)
+        else:
+            y = np.array(props_test)
 
         if 'permeability' in args.walks_file:
             col_names = ['log10_He_Bayesian','log10_H2_Bayesian','log10_O2_Bayesian','log10_N2_Bayesian','log10_CO2_Bayesian','log10_CH4_Bayesian']            
             metric_names = [col_names[j] for j in args.property_cols]
         elif 'crow' in args.walks_file:
-            col_names = ['tg_celsius']            
-            metric_names = [col_names[j] for j in args.property_cols]            
+            col_names = ['tg_celsius']    
+            metric_names = [col_names[j] for j in args.property_cols]                    
+        elif 'HOPV' in args.walks_file:
+            col_names = ['HOMO'] 
+            metric_names = [col_names[j] for j in args.property_cols]  
+        elif 'PTC' in args.walks_file:
+            col_names = ['carcinogenicity'] 
+            metric_names = [col_names[j] for j in args.property_cols] 
         else:
             print(f"assuming {args.walks_file} is group-contrib")
             col_names = ['H2','N2','O2','CH4','CO2']
             i1, i2 = args.property_cols
             metric_names = [f'permeability_{col_names[i1]}', f'selectivity_{col_names[i1]}_{col_names[i2]}']    
-
         metric = {}
         if not (y == y).all():
             breakpoint()
         if not (y_hat == y_hat).all():
             breakpoint()
         r2s = []
+        accs = []
+        aucs = []
         for i in range(len(mean)):
-            r2 = r2_score(y[:,i], y_hat[:,i])
-            r2s.append(r2)
-            mae = np.abs(y_hat[:,i]-y[:,i]).mean()
-            mse = ((y_hat[:,i]-y[:,i])**2).mean()
-
-            if mae < best_maes[i]:
-                best_epochs[i] = len(metrics)
-                best_maes[i] = mae
-                print(f"epoch {epoch} best {metric_names[i]} mae: {mae}")
-                best_epoch_r2 = r2
-                best_epoch_mae = mae
-                best_epoch_mse = mse
+            if args.task == 'regression':
+                r2 = r2_score(y[:,i], y_hat[:,i])            
+                r2s.append(r2)
+                mae = np.abs(y_hat[:,i]-y[:,i]).mean()
+                mse = ((y_hat[:,i]-y[:,i])**2).mean()
+                if mae < best_maes[i]:
+                    best_epochs[i] = len(metrics)
+                    best_maes[i] = mae                
+                    print(f"epoch {epoch} best {metric_names[i]} mae: {mae}")
+                    best_epoch_r2 = r2
+                    best_epoch_mae = mae
+                    best_epoch_mse = mse
+                else:
+                    best_epoch_r2 = metrics[best_epochs[i]][f'{metric_names[i]}_r^2']
+                    best_epoch_mae = metrics[best_epochs[i]][f'{metric_names[i]}_mae']
+                    best_epoch_mse = metrics[best_epochs[i]][f'{metric_names[i]}_mse']
+                if r2 > best_r2s[i]:
+                    best_r2s[i] = r2
             else:
-                best_epoch_r2 = metrics[best_epochs[i]][f'{metric_names[i]}_r^2']
-                best_epoch_mae = metrics[best_epochs[i]][f'{metric_names[i]}_mae']
-                best_epoch_mse = metrics[best_epochs[i]][f'{metric_names[i]}_mse']
-            if r2 > best_r2s[i]:
-                best_r2s[i] = r2
-                 
-            metric.update({
-                f'{metric_names[i]}_r^2': r2,
-                f'{metric_names[i]}_mae': mae,
-                f'{metric_names[i]}_mse': mse,
-            })        
-            metric.update({
-                f'best_{metric_names[i]}_r^2': best_epoch_r2,
-                f'best_{metric_names[i]}_mae': best_epoch_mae,
-                f'best_{metric_names[i]}_mse': best_epoch_mse,
-            })  
-        avg_mae = np.abs(y_hat-y).mean()
-        if avg_mae < best_avg_mae:
-            best_avg_mae = avg_mae
-        avg_r2 = np.mean(r2s)
-        if avg_r2 > best_avg_r2:
-            best_avg_r2 = avg_r2
-        metric.update({"best_avg_mae": best_avg_mae})
-        metric.update({"avg_mae": avg_mae})
-        metric.update({"avg_best_mae": np.mean(best_maes)})
-        metric.update({"avg_best_r2": np.mean(best_r2s)})
-      
-        print(f"epoch {epoch} avg best mae {np.mean(best_maes)}")        
-        print(f"epoch {epoch} avg best r2 {np.mean(best_r2s)}")        
+                acc = ((y_hat[:,i]>0.5) == y[:,i]).mean()
+                accs.append(acc)  
+                auc = roc_auc_score(y[:,i],y_hat[:,i])
+                aucs.append(auc)
+                if acc > best_accs[i]:
+                    best_epochs[i] = len(metrics)
+                    best_accs[i] = acc
+                    best_aucs[i] = auc
+                    best_epoch_acc = acc
+                    best_epoch_auc = auc
+                    print(f"epoch {epoch} best {metric_names[i]} acc: {acc}")                    
+                else:
+                    best_epoch_acc = metrics[best_epochs[i]][f'{metric_names[i]}_acc']
+                    best_epoch_auc = metrics[best_epochs[i]][f'{metric_names[i]}_auc']                 
+            if args.task == 'regression':
+                metric.update({
+                    f'{metric_names[i]}_r^2': r2,
+                    f'{metric_names[i]}_mae': mae,
+                    f'{metric_names[i]}_mse': mse,
+                })        
+                metric.update({
+                    f'best_{metric_names[i]}_r^2': best_epoch_r2,
+                    f'best_{metric_names[i]}_mae': best_epoch_mae,
+                    f'best_{metric_names[i]}_mse': best_epoch_mse,
+                })  
+            else:
+                metric.update({
+                    f'{metric_names[i]}_acc': acc,
+                    f'{metric_names[i]}_auc': auc
+                })        
+                metric.update({
+                    f'best_{metric_names[i]}_acc': best_epoch_acc,
+                    f'best_{metric_names[i]}_auc': best_epoch_auc,
+                })  
+        if args.task == 'regression':
+            avg_mae = np.abs(y_hat-y).mean()
+            if avg_mae < best_avg_mae:
+                best_avg_mae = avg_mae
+            avg_r2 = np.mean(r2s)
+            if avg_r2 > best_avg_r2:
+                best_avg_r2 = avg_r2
+        else:
+            avg_acc = ((y_hat>0.5) == y).mean()
+            if avg_acc > best_avg_acc:
+                best_avg_acc = avg_acc
+            avg_auc = np.mean(aucs)
+            if avg_auc > best_avg_auc:
+                best_avg_auc = avg_auc            
+        if args.task == 'regression':
+            metric.update({"best_avg_mae": best_avg_mae})
+            metric.update({"avg_mae": avg_mae})
+            metric.update({"avg_best_mae": np.mean(best_maes)})
+            metric.update({"avg_best_r2": np.mean(best_r2s)})
+            print(f"epoch {epoch} avg best mae {np.mean(best_maes)}")        
+            print(f"epoch {epoch} avg best r2 {np.mean(best_r2s)}")                
+        else:
+            metric.update({"best_avg_acc": best_avg_acc})
+            metric.update({"avg_acc": avg_acc})
+            metric.update({"best_avg_auc": best_avg_auc})
+            metric.update({"avg_auc": avg_auc})            
+            print(f"epoch {epoch} avg best acc {np.mean(best_accs)}")        
+            print(f"epoch {epoch} avg best auc {np.mean(best_aucs)}")                          
                                       
         metrics.append(metric)
         df = pd.DataFrame(metrics)
@@ -568,39 +686,43 @@ def preprocess_data(all_dags, args, logs_folder):
         dag_ids[dag.dag_id] = dag
     for i, l in enumerate(lines):        
         if i not in dag_ids: continue
-        if 'permeability' in args.walks_file:
-            smiles = l.rstrip('\n').split(',')[0]
+        if 'permeability' in args.walks_file:            
             prop = l.rstrip('\n').split(',')[1:]
-        elif 'crow' in args.walks_file:
-            smiles = l.rstrip('\n').split(',')[0]
+        elif 'crow' in args.walks_file or 'HOPV' in args.walks_file:            
             prop = l.rstrip('\n').split(',')[1:]
-        else:
-            smiles = l.rstrip('\n').split(',')[0]
+        elif 'polymer_walks' in args.walks_file:
             prop = l.rstrip('\n').split(' ')[-1]
             prop = prop.strip('(').rstrip(')').split(',')     
+        elif 'PTC' in args.walks_file:            
+            prop = l.rstrip('\n').split(',')[1:]
+        else:
+            breakpoint()
 
-        if args.concat_mol_feats:
-            dag_ids[i].smiles = smiles
         if args.property_cols:
             if 'permeability' in args.walks_file:
                 prop = list(map(float, prop))
                 mask.append(i)
                 props.append([prop[j] for j in args.property_cols])
                 dags.append(dag_ids[i])
-            elif 'crow' in args.walks_file:
+            elif 'crow' in args.walks_file or 'HOPV' in args.walks_file:
                 assert len(args.property_cols) == 1
                 assert len(prop) == 1
                 prop = list(map(float, prop))
                 mask.append(i)
                 props.append([prop[j] for j in args.property_cols])
-                dags.append(dag_ids[i])                
+                dags.append(dag_ids[i])     
+            elif 'PTC' in args.walks_file:
+                prop = list(map(int, prop))
+                mask.append(i)
+                props.append([prop[j] for j in args.property_cols])
+                dags.append(dag_ids[i])                             
             else:
                 try:
                     prop = list(map(lambda x: float(x) if x not in ['-','_'] else None, prop))
                 except:
                     print(l)                
                 i1, i2 = args.property_cols
-                if prop[i1] and prop[i2]:
+                if prop[i1] and prop[i2]:     
                     mask.append(i)
                     props.append([prop[i1],prop[i1]/prop[i2]])
                     dags.append(dag_ids[i])
@@ -610,23 +732,39 @@ def preprocess_data(all_dags, args, logs_folder):
         for i in range(props.shape[-1]):                
             f.write(f"{mean[0,i]} {std[0,i]}\n")
     
-    norm_props = torch.FloatTensor((props-mean)/std)
+    if args.task == 'regression':
+        norm_props = torch.FloatTensor((props-mean)/std)
+    else:
+        norm_props = torch.FloatTensor(props)
     if args.cuda > -1:
         norm_props = norm_props.to(f"cuda:{args.cuda}")
     return props, norm_props, dags, mask
 
 
-def do_predict(predictor, X, edge_index, edge_attr, batch=None, cuda=-1):    
+def do_predict(predictor, X, edge_index, edge_attr, batch=None, cuda=-1, return_feats=False):
     if cuda > -1:
         X, edge_index, edge_attr = X.to(f"cuda:{cuda}"), edge_index.to(f"cuda:{cuda}"), edge_attr.to(f"cuda:{cuda}")
     # try modifying X based on edge_attr
+    if return_feats:
+        out, feats = predictor(X, edge_index, edge_attr, return_feats=return_feats)
+        if batch:
+            breakpoint()
+        else:
+            node_mask = torch.unique(edge_index)
+            feats = feats[node_mask] if predictor.share_params else [h[node_mask] for h in feats]
     y_hat = predictor(X, edge_index, edge_attr)
     if batch is None:
+        node_mask = torch.unique(edge_index)
+        y_hat = y_hat[node_mask]        
         out = y_hat.mean(axis=0)
     else:
+        breakpoint()
         mean_aggr = aggr.MeanAggregation()        
         out = mean_aggr(y_hat, batch)
-    return out
+    if return_feats:
+        return (out, feats)
+    else:
+        return out
 
 
 def W_to_attr(args, W_adj, mol_feats):
@@ -639,6 +777,71 @@ def W_to_attr(args, W_adj, mol_feats):
     if args.feat_concat_W:
         node_attr = torch.concat([node_attr, W_adj], dim=-1)
     return node_attr, edge_index, edge_attr
+
+
+
+def attach_smiles(args, all_dags):
+    lines = open(args.walks_file).readlines()
+    dag_ids = {}
+    for dag in all_dags:
+        dag_ids[dag.dag_id] = dag
+    if 'polymer_walks' in args.walks_file:
+        assert hasattr(args, 'smiles_file')
+        all_smiles = open(args.smiles_file).readlines()
+        assert len(all_smiles) == len(lines)
+        polymer_smiles = {}
+        for i, l in enumerate(all_smiles):
+            if l == '\n':
+                smiles = ''
+            else:
+                smiles = l.split(',')[0]
+            polymer_smiles[i] = smiles
+    for i, l in enumerate(lines):        
+        if i not in dag_ids: continue
+        if 'permeability' in args.walks_file:
+            smiles = l.rstrip('\n').split(',')[0]
+        elif 'crow' in args.walks_file or 'HOPV' in args.walks_file:
+            smiles = l.rstrip('\n').split(',')[0]
+        elif 'polymer_walks' in args.walks_file:
+            if args.concat_mol_feats:
+                smiles = polymer_smiles[i]
+        elif 'PTC' in args.walks_file:
+            smiles = l.rstrip('\n').split(',')[0]
+        else:
+            breakpoint()
+        if args.concat_mol_feats:
+            dag_ids[i].smiles = smiles   
+
+
+
+def chamfer_dist(old_dags, new_dags):
+    div = InternalDiversity()
+    dists = []
+    for dag1 in old_dags:
+        dist = []
+        for dag2 in new_dags:
+            mol1 = Chem.MolFromSmiles(dag1.smiles)
+            mol2 = Chem.MolFromSmiles(dag2.smiles)
+            dist.append(div.distance(mol1, mol2))
+        dists.append(dist)
+    dists = np.array(dists)
+    d1 = dists[dists.argmin(axis=0), list(range(dists.shape[1]))].mean()
+    d2 = dists[list(range(dists.shape[0])), dists.argmin(axis=1)].mean()
+    return (d1+d2)/2
+
+
+
+
+def compute_metrics(args, old_dags, new_dags):
+    metrics = {}    
+    metrics['chamfer'] = chamfer_dist(old_dags, new_dags)
+    mols = [Chem.MolFromSmiles(dag.smiles) for dag in new_dags]
+    div = InternalDiversity()
+    metrics['diversity'] = div.get_diversity(mols)
+    # retro_res = [planner.plan(dag.smiles) for dag in new_dags]        
+    # metrics['RS'] = sum([res is not None for res in retro_res])
+    return metrics
+    
 
 
 
@@ -685,15 +888,22 @@ def main(args):
     feat_lookup = {name_group(i): [] for i in range(1, len(mols)+1)}
     for mol_feat in args.mol_feat:
         if mol_feat == 'fp':            
-            if 'permeability' in args.walks_file:
+            if ('permeability' in args.walks_file) or \
+               ('crow' in args.walks_file) or \
+                ('HOPV' in args.walks_file) or \
+                ('PTC' in args.walks_file):
                 for i in range(1,len(mols)+1):
-                    feat_lookup[name_group(i)].append(mol2fp(mols[i-1]))
-            elif 'crow' in args.walks_file:
-                for i in range(1,len(mols)+1):
-                    feat_lookup[name_group(i)].append(mol2fp(mols[i-1]))
+                    try:
+                        feat_lookup[name_group(i)].append(mol2fp(mols[i-1]))    
+                    except:
+                        mols[i-1].UpdatePropertyCache()
+                        FastFindRings(mols[i-1])
+                        feat_lookup[name_group(i)].append(mol2fp(mols[i-1]))    
+
+                        
             else:
                 for i in range(1,98):
-                    feat_lookup[name_group(i)].append(mol2fp(mols[i-1]))        
+                    feat_lookup[name_group(i)].append(mol2fp(mols[i-1]))          
         elif mol_feat == 'emb':
             pass
         elif mol_feat == 'one_hot':            
@@ -744,6 +954,7 @@ def main(args):
         feat_lookup = {}
         
     if args.concat_mol_feats:
+        attach_smiles(args, dags)
         input_dim += 2048
     setattr(args, 'input_dim', input_dim)
     diffusion_args['adj_matrix'] = nx.adjacency_matrix(G).toarray()
@@ -764,71 +975,71 @@ def main(args):
     else:    
         predictor_path = os.path.join(args.grammar_folder,f'predictor_{time.time()}')
         os.makedirs(predictor_path, exist_ok=True)
-        setattr(args, 'logs_folder', predictor_path)        
+        setattr(args, 'logs_folder', predictor_path)
+        setattr(args, 'TORCH_SEED', int(os.environ.get('TORCH_SEED', '-1')))
         with open(os.path.join(predictor_path, 'config.json'), 'w+') as f:
             json.dump(json.dumps(args.__dict__), f)  
 
         props, norm_props, dags, mask = preprocess_data(dags, args, args.logs_folder)            
         model, predictor = train(args, dags, graph, diffusion_args, props, norm_props, mol_feats, feat_lookup)
+        return
        
     graph.reset()
     trajs = []
     novel = [] 
  
     seen_dags = deepcopy(dags)
+    new_dags = []
     walks = set()
+ 
+    num_tried, num_valid = 0, 0
+    new_novel = 0
+    index = 0
+    while len(novel) < args.num_generate_samples:                    
+        n = list(G.nodes())[index%len(G)]
+        if ':' in n: continue
+        traj, good = sample_walk(n, G, graph, model, all_nodes, loop_back='group-contrib' in args.walks_file)
+        if not good:
+            breakpoint()            
+        if len(traj) > 1 and good: 
+            num_tried += 1
+            name_traj = process_good_traj(traj, all_nodes)                       
+            assert len(traj) == len(name_traj)                    
+            try: # test for validity
+                root, edge_conn = verify_walk(r_lookup, predefined_graph, name_traj, loop_back='group-contrib' in args.walks_file)
+                DiffusionGraph.value_count(root, {}) # modifies edge_conn with :'s too
+                name_traj = '->'.join(name_traj)
+                trajs.append(name_traj)
+                # print(name_traj, "success")                    
+                if is_novel(seen_dags, root):
+                    seen_dags.append(root)
+                    new_dags.append(root)
+                    print(name_traj, "novel")
+                    walks.add(name_traj)                        
+                    proc = DiffusionProcess(root, graph.index_lookup, **diffusion_args)
+                    node_attr, edge_index, edge_attr = featurize_walk(graph, model, root, proc, mol_feats, feat_lookup)
+                    W_adj = walk_edge_weight(root, graph, model, proc)
+                    X = node_attr
+                    prop = do_predict(predictor, X, edge_index, edge_attr, cuda=args.cuda)
+                    print("predicted prop", prop)
+                    # probs = [W_adj[int(traj[i])][int(traj[(i+1)%len(traj)])] for i in range(len(traj))]
+                    novel.append((name_traj, root, edge_conn, W_adj, prop.detach().numpy()))
+                    new_novel += 1
+                    # p (lambda W_adj,edge_conn,graph:[[a.id,a.val,b.id,b.val,e,W_adj[graph.index_lookup[a.val]][graph.index_lookup[b.val]].item(),W_adj[graph.index_lookup[b.val]][graph.index_lookup[a.val]].item()] for (a,b,e) in edge_conn])(W_adj,edge_conn,graph)                            
+                else:
+                    print(f"{name_traj} discovered")
+            except Exception as e:
+                print(e)
+                continue
+            num_valid += 1
+        index += 1
+        print(f"add {new_novel} samples, now {len(novel)} novel samples, validity: {num_valid}/{num_tried}")
 
-    # eval_trajs = [['L5', 'S21', 'L5'], ['L5', 'P3', 'L5'], ['L5', 'S20', 'L5'], ['L5', 'P11', 'L5']]
-    # eval_trajs = [['S32', 'L14', 'S32']]
-    # eval_trajs = [['G15', 'G230', 'G67', 'G68', 'G229', 'G14', 'G15']]
-    eval_trajs = []
-    while len(novel) < args.num_generate_samples:        
-        new_novel = 0
-        for n in G.nodes():
-            if ':' in n: continue
-            if eval_trajs:
-                traj = [str(graph.index_lookup[x]) for x in eval_trajs[-1]]
-                eval_trajs.pop(-1)
-                good = True
-                breakpoint()
-            else:
-                traj, good = sample_walk(n, G, graph, model, all_nodes)                
-
-            if len(traj) > 1 and good:                    
-                name_traj = process_good_traj(traj, all_nodes)       
-                assert len(traj) == len(name_traj)                
-                try:        
-                    root, edge_conn = verify_walk(r_lookup, predefined_graph, name_traj, loop_back='group-contrib' in args.walks_file)
-                    DiffusionGraph.value_count(root, {}) # modifies edge_conn with :'s too
-                    name_traj = '->'.join(name_traj)
-                    trajs.append(name_traj)
-                    # print(name_traj, "success")                    
-                    if is_novel(seen_dags, root):
-                        seen_dags.append(root)
-                        print(name_traj, "novel")
-                        walks.add(name_traj)                        
-                        proc = DiffusionProcess(root, graph.index_lookup, **diffusion_args)
-                        node_attr, edge_index, edge_attr = featurize_walk(graph, model, root, proc, mol_feats, feat_lookup)
-                        W_adj = walk_edge_weight(root, graph, model, proc)
-                        X = node_attr
-                        prop = do_predict(predictor, X, edge_index, edge_attr, cuda=args.cuda)
-                        print("predicted prop", prop)
-                        probs = [W_adj[int(traj[i])][int(traj[(i+1)%len(traj)])] for i in range(len(traj))]
-                        novel.append((name_traj, root, edge_conn, W_adj, prop.detach().numpy()))
-                        new_novel += 1
-                        # p (lambda W_adj,edge_conn,graph:[[a.id,a.val,b.id,b.val,e,W_adj[graph.index_lookup[a.val]][graph.index_lookup[b.val]].item(),W_adj[graph.index_lookup[b.val]][graph.index_lookup[a.val]].item()] for (a,b,e) in edge_conn])(W_adj,edge_conn,graph)                            
-                    else:
-                        print(f"{name_traj} discovered")
-                except Exception as e:
-                    print(e)
-                    pass
-        print(f"add {new_novel} samples, now {len(novel)} novel samples")
-
-
+    metrics = compute_metrics(args, dags, new_dags)
+    json.dump(metrics, open(os.path.join(args.logs_folder, 'metrics.json'), 'w+'))
 
     orig_preds = []   
     graph.reset()
-    loss_history = []
     all_walks = {}
     all_walks['old'] = []
     for i, dag in enumerate(dags):
@@ -836,7 +1047,6 @@ def main(args):
         node_attr, edge_index, edge_attr = featurize_walk(graph, model, dag, proc, mol_feats, feat_lookup)
         X = node_attr
         prop = do_predict(predictor, X, edge_index, edge_attr, cuda=args.cuda)           
-        loss_history.append(nn.MSELoss()(prop, norm_props[i]).item())
         prop_npy = prop.detach().numpy()
         orig_preds.append(prop_npy)
         for j in range(len(proc.dfs_order)-1):
@@ -856,10 +1066,9 @@ def main(args):
             conn = data[dag.dag_id][-1]    
             for (a, b, e) in conn:
                 if e is None:
-                    breakpoint()
+                    print(f"old dag {i} {a.val}-{b.val} is {e}")
         all_walks['old'].append((conn, W_adj, props[i]))
 
-    print(np.mean(loss_history))
     print("best novel samples")
     
     mean = [] ; std = []
@@ -871,31 +1080,34 @@ def main(args):
             mean.append(prop_mean)
             std.append(prop_std)
             
-
+    breakpoint()
     out = []
     out_2 = []    
     if 'permeability' in args.walks_file:
         col_names = ['log10_He_Bayesian','log10_H2_Bayesian','log10_O2_Bayesian','log10_N2_Bayesian','log10_CO2_Bayesian','log10_CH4_Bayesian']            
-    elif 'crow' in args.walks_file:
-        col_names = ['tg_celsius']            
+    elif 'crow' in args.walks_file or 'HOPV' in args.walks_file:
+        col_names = ['tg_celsius'] if 'crow' in args.walks_file else ['HOMO']
         i1 = args.property_cols[0]        
+        header = f"walk,{col_names[i1]}\n"
         with open(os.path.join(args.logs_folder, 'novel_props.txt'), 'w+') as f:
-            f.write(f"walk,{col_names[i1]}\n")
+            f.write(header)
             for i, x in enumerate(novel):
                 unnorm_prop = [x[-1][i]*std[i]+mean[i] for i in range(1)]
                 out.append(unnorm_prop[0])            
                 novel[i][-1][0] = unnorm_prop[0]   
-
+                f.write(f"{novel[i][0]},{unnorm_prop[0]}\n")
     elif 'group-contrib' in args.walks_file:
         col_names = ['H2','N2','O2','CH4','CO2']        
+        header = f"walk,{col_names[i1]},{col_names[i2]},{col_names[i1]}/{col_names[i2]}\n"
         with open(os.path.join(args.logs_folder, 'novel_props.txt'), 'w+') as f:
-            f.write(f"walk,{col_names[i1]},{col_names[i2]},{col_names[i1]}/{col_names[i2]}\n")
+            f.write(header)
             for i, x in enumerate(novel):
                 unnorm_prop = [x[-1][i]*std[i]+mean[i] for i in range(2)]
-                out.append(unnorm_prop[0])            
+                out.append(unnorm_prop[0])
                 out_2.append(unnorm_prop[1])
                 novel[i][-1][0] = unnorm_prop[0]
-                novel[i][-1][1] = unnorm_prop[1]        
+                novel[i][-1][1] = unnorm_prop[1]
+                f.write(f"{novel[i][0]},{unnorm_prop[0]},{unnorm_prop[1]}\n")
     else:
         raise NotImplementedError
 
@@ -923,7 +1135,7 @@ def main(args):
         ax.legend()
         ax.grid(True)    
         fig.savefig(os.path.join(args.logs_folder, 'pareto.png'))
-    elif 'crow' in args.walks_file:
+    elif 'crow' in args.walks_file or 'HOPV' in args.walks_file:
         i1 = args.property_cols[0]
         orig_preds = [[orig_pred[i]*std[i]+mean[i] for i in range(1)] for orig_pred in orig_preds]
         out, orig_preds = np.array(out), np.array(orig_preds)     
@@ -933,7 +1145,7 @@ def main(args):
         ax.scatter(np.arange(len(out)), out, c='b', label='predicted values of novel molecules')
         ax.scatter(np.arange(len(props[:,0])), props[:,0], c='g', label='ground-truth values of original molecules')
         ax.scatter(np.arange(len(orig_preds[:,0])), orig_preds[:,0], c='r', label='predicted values of original molecules')
-        ax.set_ylabel(f'TG (celsius) {col_names[i1]}')
+        ax.set_ylabel(f'{col_names[i1]}')
         ax.set_ylim(ymin=0)
         ax.legend()
         ax.grid(True)    
@@ -943,7 +1155,16 @@ def main(args):
 
         
 
-    write_conn = lambda conn: [(str(a.id), str(b.id), a.val.split(':')[0], b.val.split(':')[0], str(e), predefined_graph[a.val.split(':')[0]][b.val.split(':')[0]][e], str(w)) for (a,b,e, w) in conn]
+    def write_conn(conn):
+        proc_conn = []
+        for (a,b,e,w) in conn:
+            a_val = a.val.split(':')[0]
+            b_val = b.val.split(':')[0]
+            if e is not None:
+                e = predefined_graph[a_val][b_val][e]
+            proc_edge = (str(a.id), str(b.id), a_val, b_val, str(e), e, str(w))                 
+            proc_conn.append(proc_edge)
+        return proc_conn
 
     # for k, v in list(data_copy.items()):
     #     if k in mask:
@@ -1041,6 +1262,7 @@ if __name__ == "__main__":
     # data params
     parser.add_argument('--predefined_graph_file')    
     parser.add_argument('--dags_file')
+    parser.add_argument('--smiles_file')
     parser.add_argument('--feat_cache', help='where to cache feats')
     parser.add_argument('--walks_file') 
     parser.add_argument('--property_cols', type=int, default=[0,1], nargs='+', 
@@ -1050,6 +1272,7 @@ if __name__ == "__main__":
     parser.add_argument('--augment_dir', action='store_true')
     parser.add_argument('--test_seed', default=-1, type=int, help='seed for splitting data')
     parser.add_argument('--test_size', default=0., type=float)
+    parser.add_argument('--task', choices=['regression','classification'], default='regression')
 
     # training params
     parser.add_argument('--num_epochs', type=int)
@@ -1057,10 +1280,12 @@ if __name__ == "__main__":
     parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--prefetch_factor', type=int, default=0)
     parser.add_argument('--lr', type=float, default=1e-3)
+    parser.add_argument('--lr_schedule', nargs='+', type=int, help="epochs to reduce lr")
     parser.add_argument('--grammar_lr', type=float, default=0.0)
     parser.add_argument('--momentum', type=float, default=0.0)
     parser.add_argument('--num_accumulation_steps', type=int, default=1)
     parser.add_argument('--opt', default='adam')
+    parser.add_argument('--gamma', default=0.1, type=float)
     parser.add_argument('--shuffle', action='store_true')
 
     # model params
@@ -1085,9 +1310,13 @@ if __name__ == "__main__":
     parser.add_argument('--mlp_out', action='store_true')
     parser.add_argument('--dropout_rate', type=float, default=0.)
     parser.add_argument('--num_transformer_heads', type=int, default=1)
+    parser.add_argument('--init', default='normal', choices=['uniform', 'zeros', 'normal'])
 
     # sampling params
     parser.add_argument('--num_generate_samples', type=int, default=15)
+
+    # analysis params
+    parser.add_argument('--plot_feats', action='store_true')
 
     args = parser.parse_args()
     

@@ -22,6 +22,18 @@ for f in os.listdir(args.logs):
             config = json.load(open(os.path.join(folder, 'config.json')))
         if 'test_seed' not in config:
             continue
+        options = []
+        for (option, val) in config.items():
+            if val is False or val is None:
+                continue
+            if isinstance(val, list):
+                val = ' '.join(map(str, val))
+            if val is True:
+                option_str = f'--{option}'
+            else:
+                option_str = f'--{option}'+f' {val}'
+            options.append(option_str)
+        command = 'python main.py ' + ' '.join(options)
         test_seed = config['test_seed']
         if test_seed == -1:
             continue        
@@ -33,6 +45,8 @@ for f in os.listdir(args.logs):
             best_report_metric = metrics[args.report_metric][best_epoch]
             if test_seed not in best_metrics or best_metric < best_metrics[test_seed][args.rank_metric]:
                 best_acc_descr = f"test seed: {test_seed}, best epoch: {best_epoch}, best mae: {best_metric}, best r2: {best_report_metric}"
+                best_acc_descr += f"\nfolder: {folder}"
+                best_acc_descr += f"\ncomamnd: {command}"
                 best_metrics[test_seed] = {args.rank_metric: best_metric, args.report_metric: best_report_metric}
                 best_metric_descrs[test_seed] = best_acc_descr
 print('\n'.join(list(best_metric_descrs.values())))
