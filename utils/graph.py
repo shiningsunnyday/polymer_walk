@@ -831,7 +831,7 @@ def mol2fp(mol,nBits=2048):
     # Chem.SanitizeMol(mol_extract)
    
     # fp = AllChem.GetMorganFingerprintAsBitVect(mol_extract, 2, nBits) 
-    fp = AllChem.GetMorganFingerprintAsBitVect(mol, 2, nBits) 
+    fp = AllChem.GetMorganFingerprintAsBitVect(mol, 2, nBits)  
     arr = np.zeros((1,))
     DataStructs.ConvertToNumpyArray(fp, arr)
     return arr    

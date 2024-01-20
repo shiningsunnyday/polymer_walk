@@ -104,7 +104,7 @@ def train_sgd(args,
             loss = loss_func(prop, norm_props_train[ind])
             train_loss_history.append(loss.item())     
             loss_backward_time = time.time()
-            loss.backward(retain_graph=True)
+            loss.backward()
             if not (loss == loss).all():
                 breakpoint()                            
         if args.augment_dfs:
@@ -555,6 +555,9 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats, feat_
         elif 'HOPV' in args.walks_file:
             col_names = ['HOMO'] 
             metric_names = [col_names[j] for j in args.property_cols]  
+        elif 'lipophilicity' in args.walks_file:
+            col_names = ['lipophilicity'] 
+            metric_names = [col_names[j] for j in args.property_cols]              
         elif 'PTC' in args.walks_file:
             col_names = ['carcinogenicity'] 
             metric_names = [col_names[j] for j in args.property_cols] 
@@ -688,7 +691,11 @@ def preprocess_data(all_dags, args, logs_folder):
         if i not in dag_ids: continue
         if 'permeability' in args.walks_file:            
             prop = l.rstrip('\n').split(',')[1:]
-        elif 'crow' in args.walks_file or 'HOPV' in args.walks_file:            
+        elif 'crow' in args.walks_file:                 
+            prop = l.rstrip('\n').split(',')[1:]
+        elif 'HOPV' in args.walks_file:          
+            prop = l.rstrip('\n').split(',')[1:]     
+        elif 'lipophilicity' in args.walks_file:
             prop = l.rstrip('\n').split(',')[1:]
         elif 'polymer_walks' in args.walks_file:
             prop = l.rstrip('\n').split(' ')[-1]
@@ -704,7 +711,7 @@ def preprocess_data(all_dags, args, logs_folder):
                 mask.append(i)
                 props.append([prop[j] for j in args.property_cols])
                 dags.append(dag_ids[i])
-            elif 'crow' in args.walks_file or 'HOPV' in args.walks_file:
+            elif 'crow' in args.walks_file or 'HOPV' in args.walks_file or 'lipophilicity' in args.walks_file:
                 assert len(args.property_cols) == 1
                 assert len(prop) == 1
                 prop = list(map(float, prop))
@@ -758,7 +765,9 @@ def do_predict(predictor, X, edge_index, edge_attr, batch=None, cuda=-1, return_
         y_hat = y_hat[node_mask]        
         out = y_hat.mean(axis=0)
     else:
-        breakpoint()
+        node_mask = torch.unique(edge_index)
+        batch = batch[node_mask]
+        y_hat = y_hat[node_mask]
         mean_aggr = aggr.MeanAggregation()        
         out = mean_aggr(y_hat, batch)
     if return_feats:
@@ -806,6 +815,8 @@ def attach_smiles(args, all_dags):
             if args.concat_mol_feats:
                 smiles = polymer_smiles[i]
         elif 'PTC' in args.walks_file:
+            smiles = l.rstrip('\n').split(',')[0]
+        elif 'lipophilicity' in args.walks_file:
             smiles = l.rstrip('\n').split(',')[0]
         else:
             breakpoint()
@@ -891,16 +902,31 @@ def main(args):
             if ('permeability' in args.walks_file) or \
                ('crow' in args.walks_file) or \
                 ('HOPV' in args.walks_file) or \
-                ('PTC' in args.walks_file):
+                ('PTC' in args.walks_file) or \
+                ('lipophilicity' in args.walks_file):
                 for i in range(1,len(mols)+1):
                     try:
                         feat_lookup[name_group(i)].append(mol2fp(mols[i-1]))    
-                    except:
+                    except:   
+                        print(f"cannot get fingerprint of {i}")                       
+                        if 'lipophilicity' in args.walks_file and i == 166:
+                            mols[i-1].GetAtomWithIdx(8).SetFormalCharge(1)
+                        elif 'lipophilicity' in args.walks_file and i == 421:
+                            mols[i-1].GetAtomWithIdx(8).SetFormalCharge(1)
+                        elif 'lipophilicity' in args.walks_file and i == 509:
+                            mols[i-1].GetAtomWithIdx(4).SetFormalCharge(1)
+                        elif 'lipophilicity' in args.walks_file and i == 563:
+                            mols[i-1].GetAtomWithIdx(4).SetFormalCharge(1)
+                        elif 'lipophilicity' in args.walks_file and i == 937:
+                            mols[i-1].GetAtomWithIdx(3).SetFormalCharge(1)
+                        elif 'lipophilicity' in args.walks_file and i == 1297:
+                            mols[i-1].GetAtomWithIdx(1).SetFormalCharge(1)
+                        else:
+                            breakpoint()
                         mols[i-1].UpdatePropertyCache()
                         FastFindRings(mols[i-1])
-                        feat_lookup[name_group(i)].append(mol2fp(mols[i-1]))    
-
-                        
+                        feat_lookup[name_group(i)].append(mol2fp(mols[i-1]))
+                       
             else:
                 for i in range(1,98):
                     feat_lookup[name_group(i)].append(mol2fp(mols[i-1]))          
@@ -1085,17 +1111,6 @@ def main(args):
     out_2 = []    
     if 'permeability' in args.walks_file:
         col_names = ['log10_He_Bayesian','log10_H2_Bayesian','log10_O2_Bayesian','log10_N2_Bayesian','log10_CO2_Bayesian','log10_CH4_Bayesian']            
-    elif 'crow' in args.walks_file or 'HOPV' in args.walks_file:
-        col_names = ['tg_celsius'] if 'crow' in args.walks_file else ['HOMO']
-        i1 = args.property_cols[0]        
-        header = f"walk,{col_names[i1]}\n"
-        with open(os.path.join(args.logs_folder, 'novel_props.txt'), 'w+') as f:
-            f.write(header)
-            for i, x in enumerate(novel):
-                unnorm_prop = [x[-1][i]*std[i]+mean[i] for i in range(1)]
-                out.append(unnorm_prop[0])            
-                novel[i][-1][0] = unnorm_prop[0]   
-                f.write(f"{novel[i][0]},{unnorm_prop[0]}\n")
     elif 'group-contrib' in args.walks_file:
         col_names = ['H2','N2','O2','CH4','CO2']        
         header = f"walk,{col_names[i1]},{col_names[i2]},{col_names[i1]}/{col_names[i2]}\n"
@@ -1109,7 +1124,23 @@ def main(args):
                 novel[i][-1][1] = unnorm_prop[1]
                 f.write(f"{novel[i][0]},{unnorm_prop[0]},{unnorm_prop[1]}\n")
     else:
-        raise NotImplementedError
+        if 'crow' in args.walks_file:
+            col_names = ['tg_celsius']
+        elif 'HOPV' in args.walks_file:
+            col_names = ['HOMO']
+        elif 'lipophilicity' in args.walks_file:
+            col_names = ['lipophilicity']
+        else:
+            raise NotImplementedError
+        i1 = args.property_cols[0]        
+        header = f"walk,{col_names[i1]}\n"
+        with open(os.path.join(args.logs_folder, 'novel_props.txt'), 'w+') as f:
+            f.write(header)
+            for i, x in enumerate(novel):
+                unnorm_prop = [x[-1][i]*std[i]+mean[i] for i in range(1)]
+                out.append(unnorm_prop[0])            
+                novel[i][-1][0] = unnorm_prop[0]   
+                f.write(f"{novel[i][0]},{unnorm_prop[0]}\n")                
 
 
     assert len(orig_preds[0]) == len(mean)
@@ -1135,7 +1166,7 @@ def main(args):
         ax.legend()
         ax.grid(True)    
         fig.savefig(os.path.join(args.logs_folder, 'pareto.png'))
-    elif 'crow' in args.walks_file or 'HOPV' in args.walks_file:
+    else:
         i1 = args.property_cols[0]
         orig_preds = [[orig_pred[i]*std[i]+mean[i] for i in range(1)] for orig_pred in orig_preds]
         out, orig_preds = np.array(out), np.array(orig_preds)     
@@ -1150,8 +1181,7 @@ def main(args):
         ax.legend()
         ax.grid(True)    
         fig.savefig(os.path.join(args.logs_folder, 'pareto.png'))        
-    else:
-        raise NotImplementedError
+
 
         
 
