@@ -79,10 +79,18 @@ if __name__ == "__main__":
     ax.set_title("Our method's final layer features")
     ax_gnn = fig.add_subplot(1,2,2)
     ax_gnn.set_title("Pre-trained GIN final layer features")
+    f = open(os.path.join(args.log_dir, 'tsne.txt'),'w+')
+    f.write(f"x,y,smiles,property\n")
+    pos = []
     for i, mask in enumerate(masks):
         for idx, m in enumerate(mask):
             if m:
                 ax.scatter(X[idx,0], X[idx,1], c=str(norm_scores[idx]), s=20)
                 ax_gnn.scatter(X_gnn[idx,0], X_gnn[idx,1], c=str(norm_scores[idx]), s=20)
-    fig.savefig(os.path.join(args.log_dir, 'tsne.png'))
+                pos.append((X[idx,0],X[idx,1],data[idx][0],data[idx][1]))
+    pos = sorted(pos, key=lambda x:x[:2])
+    for p in pos:
+        f.write(",".join(map(str,p))+'\n')
+    f.close()
+    fig.savefig(os.path.join(args.log_dir, 'tsne.png'))    
     print(os.path.join(args.log_dir, 'tsne.png'))

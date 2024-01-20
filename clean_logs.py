@@ -1,6 +1,7 @@
 import os
 import shutil
 import argparse
+import json
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--dir', required=True)
@@ -8,6 +9,9 @@ if __name__ == "__main__":
     work_dir = args.dir
     for folder in os.listdir(work_dir):
         if folder[:4] != "logs": continue
+        config = json.loads(json.load(open(os.path.join(work_dir, folder, "config.json"))))
+        if 'motifs_folder' in config and 'hopv' in config['motifs_folder']:
+            print(folder)
         no_plot = True
         for predictor_log in os.listdir(os.path.join(work_dir, folder)):
             if predictor_log[:9] == 'predictor':
