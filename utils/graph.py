@@ -21,6 +21,7 @@ dataset = os.environ['dataset']
 mols = load_mols(f'{dataset}/all_groups')
 annotate_extra(mols, f'{dataset}/all_groups/all_extra.txt')
 
+
 class Node:
     def __init__(self, parent, children, val, id, side_chain=False):        
         self.parent = parent
@@ -248,7 +249,10 @@ def substruct_matches(mol, subgraph):
 
 def find_isomorphic(mol1, mol2, r_grp_1, rdkit=False):
     b2s = []
-    if rdkit:
+    exception_case = False
+    if len(r_grp_1) == 1:
+        exception_case = True
+    if rdkit and not exception_case:
         mapped_subgraph = extract_subgraph(mol1, r_grp_1)[1]  
         b2s_new = substruct_matches(mol2, mapped_subgraph)
         """
@@ -361,6 +365,8 @@ def reds_isomorphic(m1, m2, rdkit=False):
     # if name_group(m1)== 'G30' and name_group(m2) == 'G6':
     #     breakpoint()
     # if m1 == 219 and m2 == 222:
+    #     breakpoint()
+    # if m1 == 176 and m2 == 177:
     #     breakpoint()
     print(name_group(m1), name_group(m2))
     r_grp_m1 = list_red_members(mols[m1-1])

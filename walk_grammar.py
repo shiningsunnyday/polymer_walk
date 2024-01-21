@@ -12,12 +12,11 @@ name_to_id = {name_group(i+1):i+1 for i in range(len(mols))}
 
 def run_checks(rdkit=False):
     checks = []
-    if rdkit:
-        bad = []
-        pass
+    bad = []
+    if rdkit:   
+        checks.append('G176 G177'.split(' '))
     else:
-        # a bunch of asserts
-        bad = []        
+        # a bunch of asserts                
         checks.append('L3 S32'.split(' '))
         checks.append('P15 P18'.split(' '))
         checks.append('L4 P40'.split(' '))
