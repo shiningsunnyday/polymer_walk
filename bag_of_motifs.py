@@ -406,14 +406,21 @@ def train(args, dags, props, norm_props):
     X_test, y_test = np.array(X_test), np.array(y_test)
     predictor.fit(X_train, y_train)
     test_preds = predictor.predict(X_test)
+    train_preds = predictor.predict(X_train)
     if len(test_preds.shape) == 1:
         test_preds = test_preds[:, None]
+    if len(train_preds.shape) == 1:
+        train_preds = train_preds[:, None]    
     if args.norm_metrics:
-        y = np.array(norm_props_test)
+        y_test = np.array(norm_props_test)
+        y_train = np.array(norm_props_train)
     else:
         test_preds = test_preds*std+mean
-        y = np.array(props_test)
-    y_hat = np.array(test_preds)    
+        train_preds = train_preds*std+mean
+        y_test = np.array(props_test)
+        y_train = np.array(props_train)
+    y_hat_train = np.array(train_preds)    
+    y_hat_test = np.array(test_preds)    
     if 'permeability' in args.walks_file:
         col_names = ['log10_He_Bayesian','log10_H2_Bayesian','log10_O2_Bayesian','log10_N2_Bayesian','log10_CO2_Bayesian','log10_CH4_Bayesian']            
         metric_names = [col_names[j] for j in args.property_cols]
@@ -436,20 +443,28 @@ def train(args, dags, props, norm_props):
         metric_names = [f'permeability_{col_names[i1]}', f'selectivity_{col_names[i1]}_{col_names[i2]}']    
     metric = {}
     metrics = []
-    if not (y == y).all():
+    if not (y_test == y_test).all():
         breakpoint()
-    if not (y_hat == y_hat).all():
+    if not (y_hat_test == y_hat_test).all():
         breakpoint()
            
     if args.task == 'regression':
         for i in range(len(metric_names)):
             prop = metric_names[i]
-            r2 = r2_score(y[:,i], y_hat[:,i])            
-            mae = np.abs(y_hat[:,i]-y[:,i]).mean()
-            mse = ((y_hat[:,i]-y[:,i])**2).mean()        
-            metric.update({f"r2_{prop}": r2})
-            metric.update({f"mae_{prop}": mae})
-            metric.update({f"mse_{prop}": mse})             
+            r2 = r2_score(y_test[:,i], y_hat_test[:,i])            
+            mae = np.abs(y_hat_test[:,i]-y_test[:,i]).mean()
+            mse = ((y_hat_test[:,i]-y_test[:,i])**2).mean()                         
+            metric.update({f"test_r2_{prop}": r2})
+            metric.update({f"test_mae_{prop}": mae})
+            metric.update({f"test_mse_{prop}": mse})             
+        for i in range(len(metric_names)):
+            prop = metric_names[i]
+            r2 = r2_score(y_train[:,i], y_hat_train[:,i])            
+            mae = np.abs(y_hat_train[:,i]-y_train[:,i]).mean()
+            mse = ((y_hat_train[:,i]-y_train[:,i])**2).mean()                         
+            metric.update({f"train_r2_{prop}": r2})
+            metric.update({f"train_mae_{prop}": mae})
+            metric.update({f"train_mse_{prop}": mse})                         
     else:
         breakpoint()                        
                                     
