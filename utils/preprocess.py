@@ -16,11 +16,12 @@ def name_group(m):
     """
     ANYTHING OTHER THAN GROUP CONTRIB
     """
-    # return f"G{m}" # not group contrib
-
-    """GROUP CONTRIB"""
-    prefix = lambda x: "P" if x <= 41 else ("S" if x <= 73 else "L")
-    return prefix(m)+f"{m if m<=41 else m-41 if m<=73 else m-73}"
+    if 'group-contrib' in os.environ['dataset']:
+        """GROUP CONTRIB"""
+        prefix = lambda x: "P" if x <= 41 else ("S" if x <= 73 else "L")
+        return prefix(m)+f"{m if m<=41 else m-41 if m<=73 else m-73}"
+    else:
+        return f"G{m}" # not group contrib
 
 
 class InternalDiversity():
