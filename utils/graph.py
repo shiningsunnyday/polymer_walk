@@ -16,33 +16,10 @@ from walk import walk_enumerate_mols
 # from retro_star.api import planner
 
 
-"""FOR GROUP CONTRIBUTION"""
-# mols = load_mols('data/datasets/group-contrib/all_groups')
-# annotate_extra(mols, 'data/datasets/group-contrib/all_groups/all_extra.txt')
-
-"""FOR CROW"""
-# mols = load_mols('data/datasets/crow/all_groups')
-# annotate_extra(mols, 'data/datasets/crow/all_groups/all_extra.txt')
-
-# mols = load_mols('data/datasets/pu_groups/all_groups')
-# annotate_extra(mols, 'data/datasets/pu_groups/all_groups/all_extra.txt')
-
-"""FOR LIPO"""
-mols = load_mols('data/datasets/lipophilicity/all_groups')
-annotate_extra(mols, 'data/datasets/lipophilicity/all_groups/all_extra.txt')
-
-"""FOR PERMEABILITY"""
-# mols = load_mols('data/datasets/datasetA_permeability/all_groups')
-# annotate_extra(mols, 'data/datasets/datasetA_permeability/all_groups/all_extra.txt')
-
-"""FOR HOPV"""
-# mols = load_mols('data/datasets/hopv/all_groups')
-# annotate_extra(mols, 'data/datasets/hopv/all_groups/all_extra.txt')
-
-"""FOR PTC"""
-# mols = load_mols('data/datasets/ptc/all_groups')
-# annotate_extra(mols, 'data/datasets/ptc/all_groups/all_extra.txt')
-
+"""FOR GROUP CONTRIBUTION and ALL DATASETS"""
+dataset = os.environ['dataset']
+mols = load_mols(f'{dataset}/all_groups')
+annotate_extra(mols, f'{dataset}/all_groups/all_extra.txt')
 
 class Node:
     def __init__(self, parent, children, val, id, side_chain=False):        

@@ -289,9 +289,10 @@ def featurize_walk(graph, model, dag, proc, mol_feats, feat_lookup={}):
         
 
 
-def idx_partition(data, all_idx, test_size=0.2):
+def idx_partition(data, all_idx, test_size=0.2, train_size=0.8):
+    train_size = min(train_size, 1-test_size)
     assert len(data) == len(all_idx)
-    train_mask = all_idx[:int((1-test_size)*len(data))]
+    train_mask = all_idx[:int(train_size*len(data))]
     test_mask = all_idx[int((1-test_size)*len(data)):]
     train, test = [data[i] for i in train_mask], [data[i] for i in test_mask]
     if isinstance(data, torch.Tensor):
@@ -306,17 +307,19 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats, feat_
         random.seed(args.test_seed)
         all_idx = list(range(len(dags_copy)))
         random.shuffle(all_idx)
-        idx_train, idx_test = idx_partition(all_idx, all_idx, args.test_size)
+        idx_train, idx_test = idx_partition(all_idx, all_idx, args.test_size, train_size=args.train_size)
         with open(os.path.join(args.logs_folder, 'test_idx.txt'), 'w+') as f:
             for idx in idx_test:
                 f.write(f"{idx}\n")
-        dags_copy_train, dags_copy_test = idx_partition(dags_copy, all_idx, args.test_size)
-        norm_props_train, norm_props_test = idx_partition(norm_props, all_idx, args.test_size)
-        props_train, props_test = idx_partition(props, all_idx, args.test_size)
-        train_inds, test_inds = idx_partition(list(range(len(dags_copy))), all_idx, args.test_size)
+        dags_copy_train, dags_copy_test = idx_partition(dags_copy, all_idx, args.test_size, train_size=args.train_size)
+        norm_props_train, norm_props_test = idx_partition(norm_props, all_idx, args.test_size, train_size=args.train_size)
+        props_train, props_test = idx_partition(props, all_idx, args.test_size, train_size=args.train_size)
+        train_inds, test_inds = idx_partition(list(range(len(dags_copy))), all_idx, args.test_size, train_size=args.train_size)
     elif args.test_size:
+        assert args.train_size == 1.
         dags_copy_train, dags_copy_test, norm_props_train, norm_props_test, props_train, props_test, train_inds, test_inds = train_test_split(dags_copy, norm_props, props, list(range(len(dags_copy))), test_size=args.test_size, random_state=42)
     else:
+        assert args.train_size == 1.
         dags_copy_train, dags_copy_test, norm_props_train, norm_props_test, props_train, props_test, train_inds, test_inds = dags_copy, dags_copy, norm_props, norm_props, props, props, list(range(len(dags_copy))), list(range(len(dags_copy)))
     print(f"{len(dags_copy_train)} train dags, {len(dags_copy_test)} test dags")
     all_procs_train = []
@@ -1301,11 +1304,12 @@ if __name__ == "__main__":
     parser.add_argument('--augment_order', action='store_true')
     parser.add_argument('--augment_dir', action='store_true')
     parser.add_argument('--test_seed', default=-1, type=int, help='seed for splitting data')
+    parser.add_argument('--train_size', default=1., type=float)
     parser.add_argument('--test_size', default=0., type=float)
     parser.add_argument('--task', choices=['regression','classification'], default='regression')
 
     # training params
-    parser.add_argument('--num_epochs', type=int)
+    parser.add_argument('--num_epochs', type=int, default=1000)
     parser.add_argument('--batch_size', type=int, default=1)
     parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--prefetch_factor', type=int, default=0)
