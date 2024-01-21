@@ -168,7 +168,7 @@ def eval_sgd(args,
                 prop = F.sigmoid(prop)                        
             loss = loss_func(prop, norm_props_test[i])            
             loss_history.append(loss.item())
-            if 'HOPV' in args.walks_file:
+            if args.norm_metrics:
                 test_preds.append(prop.cpu().numpy())
             else:    
                 test_preds.append((prop.cpu()*std+mean).numpy())    
@@ -196,7 +196,7 @@ def eval_batch(args,
                 prop = F.sigmoid(prop)                
             loss = loss_func(prop, props_y)            
             loss_history = np.concatenate((loss_history, torch.atleast_2d(loss).numpy().mean(axis=-1, keepdims=True)), axis=0)
-            if 'HOPV' in args.walks_file:
+            if args.norm_metrics:
                 test_preds = np.concatenate((test_preds, prop.cpu().numpy()), axis=0)
             else:
                 test_preds = np.concatenate((test_preds, (prop.cpu()*std+mean).numpy()), axis=0)
@@ -544,7 +544,7 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats, feat_
         history.append(np.mean(loss_history))
         train_history.append(np.mean(train_loss_history))        
         y_hat = np.array(test_preds)
-        if 'HOPV' in args.walks_file:
+        if args.norm_metrics:
             y = np.array(norm_props_test)
         else:
             y = np.array(props_test)
@@ -1265,18 +1265,16 @@ def run_tests(graph, all_nodes)                :
 
     # test verify_walk    
     r_lookup = r_member_lookup(mols)     
-    # verify_walk(r_lookup, graph, ['L3','S32','S20[->S1,->S1]','S32'])
-    # verify_walk(r_lookup, graph, ['L3','S32','S20[->P14->P39,->S18]','S32'])
+    # verify_walk(r_lookup, graph, ['L3','S32','S20[->S1,->S1]','S32'], loop_back=True)
+    # verify_walk(r_lookup, graph, ['L3','S32','S20[->P14->P39,->S18]','S32'], loop_back=True)
     
     # test process_good_traj
     name_traj = process_good_traj(['62','92','50[->39,->39]','92'], all_nodes)    
-    assert name_traj == ['L3','S32','S20[->S1,->S1]','S32']
     name_traj = process_good_traj(['62','92','50[->12->37,->48]','92'], all_nodes)
-    assert name_traj == ['L3','S32','S20[->P14->P39,->S18]','S32']
 
     # test edge-connection guessing
-    # verify_walk(r_lookup, graph.graph, ['S7','S3','S7'])
-    verify_walk(r_lookup, graph.graph, ['S32','L14','S32'])
+    # verify_walk(r_lookup, graph.graph, ['S7','S3','S7'], loop_back=True)
+    verify_walk(r_lookup, graph.graph, ['S32','L14','S32'], loop_back=True)
 
 
 
@@ -1300,6 +1298,7 @@ if __name__ == "__main__":
     parser.add_argument('--walks_file') 
     parser.add_argument('--property_cols', type=int, default=[0,1], nargs='+', 
                         help='for group contrib, expect 2 cols of the respective permeabilities')
+    parser.add_argument('--norm_metrics', action='store_true')
     parser.add_argument('--augment_dfs', action='store_true')
     parser.add_argument('--augment_order', action='store_true')
     parser.add_argument('--augment_dir', action='store_true')

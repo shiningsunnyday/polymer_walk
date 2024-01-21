@@ -10,7 +10,7 @@ if __name__ == "__main__":
     for folder in os.listdir(work_dir):
         if folder[:4] != "logs": continue
         config = json.loads(json.load(open(os.path.join(work_dir, folder, "config.json"))))
-        if 'motifs_folder' in config and 'hopv' in config['motifs_folder']:
+        if 'motifs_folder' in config and 'group-contrib' in config['motifs_folder']:
             print(folder)
         no_plot = True
         for predictor_log in os.listdir(os.path.join(work_dir, folder)):

@@ -40,7 +40,10 @@ for f in os.listdir(args.logs):
         if os.path.exists(os.path.join(folder, 'metrics.csv')):
             metrics = pd.read_csv(os.path.join(folder, 'metrics.csv'), index_col=0)
             best_metric = metrics[args.rank_metric]    
-            best_epoch = best_metric.argmin()
+            try:
+                best_epoch = best_metric.argmin()
+            except:
+                continue
             best_metric = best_metric.min()
             best_report_metric = metrics[args.report_metric][best_epoch]
             if test_seed not in best_metrics or best_metric < best_metrics[test_seed][args.rank_metric]:

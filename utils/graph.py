@@ -729,8 +729,10 @@ def verify_edge_conn(graph, conn, r_lookup):
             continue
         red_j1 = graph[a.val][b.val][i]['r_grp_1']
         red_j2 = graph[a.val][b.val][i]['r_grp_2']
-        assert tuple(red_j1) in set(tuple(x) for x in r_lookup[a.val].values())
-        assert tuple(red_j2) in set(tuple(x) for x in r_lookup[b.val].values())
+        if not tuple(red_j1) in set(tuple(x) for x in r_lookup[a.val].values()):
+            breakpoint()
+        if not tuple(red_j2) in set(tuple(x) for x in r_lookup[b.val].values()):
+            breakpoint()
         if set(red_j1) & used_reds[a.id]:
             continue
         if set(red_j2) & used_reds[b.id]:
@@ -756,7 +758,6 @@ def verify_edge_conn(graph, conn, r_lookup):
 def verify_walk(r_lookup, graph, walk, loop_back=False):
     # r_lookup: dict(red group id: atoms)
     # check all edges exist
-    
     try:         
         if isinstance(walk, nx.Graph):
             root, edge_conn = traverse_dfs(walk, graph, loop_back=loop_back)
