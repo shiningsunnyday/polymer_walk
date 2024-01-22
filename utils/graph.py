@@ -522,42 +522,46 @@ def find_e(graph, a, b, e1):
 def bfs_traverse(G, graph):
     """
     Difference with verify_walk is that G is a graph, instead of a walk
+    By default, make all nodes side chain, then find longest path to make it main chain
     """
-    start = list(G.nodes)[0]
-    prev_node = Node(None, [], start.split(':')[0], 0)
+    paths = dict(nx.all_pairs_shortest_path(G))
+    path_len = 0
+    main_nodes = []
+    for path_start, paths_k in paths.items():        
+        for path_end, path in paths_k.items():
+            if len(path) > path_len:
+                path_len = len(path)
+                start = path_start
+                main_nodes = path
+    prev_node = Node(None, [], start.split(':')[0], 0, side_chain=False)
     id = 1
-    bfs = [prev_node]
+    bfs = [(prev_node, start)]
     vis = {n: False for n in G.nodes()}
     vis[start] = True
     conn = []
     root_node = prev_node
     circ_edge = None
     while bfs:
-        prev_node = bfs.pop(0)
+        prev_node, prev_node_val = bfs.pop(0)
         is_leaf = True
-        for cur in G[prev_node.val]:            
+        for cur in G[prev_node_val]:            
             if vis[cur]:
                 continue
-            is_leaf = False
-            assert len(G[prev_node.val][cur]) == 1
-            r_grp_1 = G[prev_node.val][cur][0]['r_grp_1']
-            r_grp_2 = G[prev_node.val][cur][0]['r_grp_2']
-            i = find_edge(graph, prev_node.val.split(':')[0], cur.split(':')[0], r_grp_1, r_grp_2)
-            # i = list(graph[prev_node.val][cur])[0]
-            cur_node = Node((prev_node, i), [], cur.split(':')[0], id)
+            assert len(G[prev_node_val][cur]) == 1
+            r_grp_1 = G[prev_node_val][cur][0]['r_grp_1']
+            r_grp_2 = G[prev_node_val][cur][0]['r_grp_2']
+            i = find_edge(graph, prev_node_val.split(':')[0], cur.split(':')[0], r_grp_1, r_grp_2)
+            # i = list(graph[prev_node_val][cur])[0]
+            cur_node = Node((prev_node, i), [], cur.split(':')[0], id, side_chain=(cur not in main_nodes))
             id += 1
             prev_node.add_child((cur_node, i))
-            assert len(list(G[prev_node.val][cur])) == 1
+            assert len(list(G[prev_node_val][cur])) == 1
             # if i is None:
             #     breakpoint()
             conn.append((prev_node, cur_node, i))
             conn.append((cur_node, prev_node, i))
             vis[cur] = True
-            bfs.append(cur_node)
-    #     if is_leaf and root_node.val in graph[prev_node.val]:
-    #         circ_edge = (root_node, prev_node)
-    # if circ_edge is None:
-    #     breakpoint()
+            bfs.append((cur_node, cur))
     if root_node.id:
         breakpoint()
     return root_node, conn   

@@ -45,7 +45,7 @@ class DiffusionProcess:
             res = []
             self.dfs_walk(dag, res)
             self.dfs_order = res
-            self.num_nodes = len(res)
+            self.num_nodes = len(res)            
         else:
             self.dfs_dir = dfs_seed >= 0
             dfs_seed = abs(dfs_seed)

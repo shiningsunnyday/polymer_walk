@@ -94,6 +94,7 @@ if __name__ == "__main__":
         for f in lines:
             G = nx.read_edgelist(os.path.join(args.data_file, f), create_using=nx.MultiDiGraph)      
             if G.nodes() and max(len(cyc) for cyc in nx.simple_cycles(G)) > 2: # length > 2 is problem
+                breakpoint()
                 print(f"{f} has cycle")
             try:
                 root, conn = bfs_traverse(G, graph)
