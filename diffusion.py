@@ -668,6 +668,58 @@ def walk_edge_weight(dag, graph, model, proc, eps=1e-6):
 
 
 
+def featurize_walk(args, graph, model, dag, proc, mol_feats, feat_lookup={}):
+    """
+    graph: DiffusionGraph
+    model: L_grammar
+    dag: Node
+    proc: DiffusionProcess
+    mol_feats: (len(graph.graph), dim) features of groups on graph.graph
+    feat_lookup: features of isolated groups not on graph.graph
+    """
+    if dag.children:
+        try:
+            W_adj = walk_edge_weight(dag, graph, model, proc)
+        except:
+            breakpoint()
+        # GNN with edge weight
+        node_attr, edge_index, edge_attr = W_to_attr(args, W_adj, mol_feats)
+    else:
+        assert feat_lookup, "need features for isolated groups"
+        assert dag.val not in graph.graph
+        assert len(proc.dfs_order) == 1
+        N = len(graph.graph)
+        W_adj = torch.zeros((N, N), dtype=torch.float32)                
+        if isinstance(feat_lookup[dag.val], torch.Tensor):
+            feat = feat_lookup[dag.val][None]
+            mol_isolated_feats = torch.tile(feat,[N,1])
+        else:
+            feat = feat_lookup[dag.val][None].astype('float32')
+            mol_isolated_feats = np.tile(feat,[N,1])
+        node_attr, edge_index, edge_attr = W_to_attr(args, W_adj, mol_isolated_feats)
+        assert edge_index.shape[1] == 0
+        edge_index = torch.tensor([[0], [0]], dtype=torch.int64) # trivial self-connection for gnn
+        edge_attr = torch.tensor([[1.]])
+    if hasattr(dag, 'smiles'):
+        dag_mol = Chem.MolFromSmiles(dag.smiles)
+        # if dag_mol is None: # try smarts
+        #     dag_mol = Chem.MolFromSmarts(dag.smiles)        
+        # else:
+        #     dag_mol = Chem.AddHs(dag_mol)  
+        # try:
+        #     Chem.SanitizeMol(dag_mol)          
+        #     if dag_mol is None:
+        #         breakpoint()
+        #     smiles_fp = torch.as_tensor(mol2fp(dag_mol), dtype=torch.float32)
+        # except:
+        #     smiles_fp = torch.zeros((2048,), dtype=torch.float32)
+        smiles_fp = torch.as_tensor(mol2fp(dag_mol), dtype=torch.float32)
+        node_attr = torch.concat((node_attr, torch.tile(smiles_fp, (node_attr.shape[0],1))), -1)
+    return node_attr, edge_index, edge_attr
+        
+
+
+
 def diffuse(graph, log_folder, **diff_args):
     G = graph.graph
     print(f"state at 0: {graph.get_state()}")    
@@ -921,8 +973,7 @@ def sample_walk(n, G, graph, model, all_nodes, loop_back=True):
         # print(f"input state {get_repr(state)}, context {get_repr(context)}, t {t}")  
         update, context = model(state, context, t)
         if not (state>=0).all():
-            breakpoint()
-                         
+            breakpoint()                         
         state = state_to_probs(state+update, graph.adj[cur_node_ind])
         state_numpy = state.detach().flatten().numpy()
         for i in range(len(G)):
@@ -930,7 +981,7 @@ def sample_walk(n, G, graph, model, all_nodes, loop_back=True):
                 state_numpy[i] = 0.
             if check_colon_order(all_nodes, traj, i):
                 state_numpy[i] = 0.
-
+                        
         if state_numpy.max() <= 0.1: # set a threshold >= 0.
             if not loop_back:
                 good = True
@@ -966,33 +1017,128 @@ def sample_walk(n, G, graph, model, all_nodes, loop_back=True):
         if not loop_back and not traj_after:
             good = True
             break
-            
-
 
     return traj, good
 
 
-def sample_walks(G, graph, walks, model, all_nodes, r_lookup, predefined_graph):       
-    novel = []
-    for _ in range(2):
-        for n in G.nodes():
-            if ':' in n: continue            
-            traj, good = sample_walk(n, G, graph, model, all_nodes)  
-            if len(traj) > 1 and good:
-                name_traj = process_good_traj(traj, all_nodes)                
-                assert len(traj) == len(name_traj)
+def do_predict(predictor, X, edge_index, edge_attr, batch=None, cuda=-1, return_feats=False):
+    if cuda > -1:
+        X, edge_index, edge_attr = X.to(f"cuda:{cuda}"), edge_index.to(f"cuda:{cuda}"), edge_attr.to(f"cuda:{cuda}")
+    # try modifying X based on edge_attr
+    if return_feats:
+        out, feats = predictor(X, edge_index, edge_attr, return_feats=return_feats)
+        if batch:
+            breakpoint()
+        else:
+            node_mask = torch.unique(edge_index)
+            feats = feats[node_mask] if predictor.share_params else [h[node_mask] for h in feats]
+    y_hat = predictor(X, edge_index, edge_attr)
+    if batch is None:
+        node_mask = torch.unique(edge_index)
+        y_hat = y_hat[node_mask]        
+        out = y_hat.mean(axis=0)
+    else:
+        node_mask = torch.unique(edge_index)
+        batch = batch[node_mask]
+        y_hat = y_hat[node_mask]
+        mean_aggr = aggr.MeanAggregation()        
+        out = mean_aggr(y_hat, batch)
+    if return_feats:
+        return (out, feats)
+    else:
+        return out
 
-                try:
-                    root, edge_conn = verify_walk(r_lookup, predefined_graph, name_traj)
-                    name_traj = '->'.join(name_traj)
-                    print(name_traj, "success")
-                    if name_traj not in walks:
-                        print(name_traj, "novel")
-                        walks.add(name_traj)
-                        novel.append((name_traj, root, edge_conn))
-                except:
-                    print(name_traj, "failed")
-    return novel
+
+def W_to_attr(args, W_adj, mol_feats):
+    edge_index = W_adj.nonzero().T
+    edge_attr = W_adj.flatten()[W_adj.flatten()>0][:, None]    
+    if args.mol_feat == 'W':
+        node_attr = W_adj
+    else:
+        node_attr = torch.as_tensor(mol_feats)
+    if args.feat_concat_W:
+        node_attr = torch.concat([node_attr, W_adj], dim=-1)
+    return node_attr, edge_index, edge_attr
+
+
+def sample_walks(args, G, graph, seen_dags, model, all_nodes, r_lookup, predefined_graph, predict_args={}):
+    new_dags = []
+    trajs = []
+    novel = []     
+ 
+    num_tried, num_valid = 0, 0
+    new_novel = 0
+    index = 0
+
+    if predict_args:
+        assert 'predictor' in predict_args
+        assert 'diffusion_args' in predict_args
+        assert 'mol_feats' in predict_args
+        assert 'feat_lookup' in predict_args
+        predictor = predict_args['predictor']
+        diffusion_args = predict_args['diffusion_args']
+        mol_feats = predict_args['mol_feats']
+        feat_lookup = predict_args['feat_lookup']
+
+    
+    while len(novel) < args.num_generate_samples:                    
+        n = list(G.nodes())[index%len(G)]
+        if ':' in n: continue
+        traj, good = sample_walk(n, G, graph, model, all_nodes, loop_back='group-contrib' in os.environ['dataset'])
+        if not good:
+            breakpoint()            
+        if len(traj) > 1 and good: 
+            num_tried += 1
+            name_traj = process_good_traj(traj, all_nodes)                       
+            assert len(traj) == len(name_traj)                    
+            try: # test for validity
+                root, edge_conn = verify_walk(r_lookup, predefined_graph, name_traj, loop_back='group-contrib' in os.environ['dataset'])
+                DiffusionGraph.value_count(root, {}) # modifies edge_conn with :'s too
+                name_traj = '->'.join(name_traj)
+                trajs.append(name_traj)
+                # print(name_traj, "success")                    
+                if is_novel(seen_dags, root):
+                    seen_dags.append(root)
+                    new_dags.append(root)
+                    print(name_traj, "novel")    
+                    if predict_args:                 
+                        proc = DiffusionProcess(root, graph.index_lookup, **diffusion_args)
+                        node_attr, edge_index, edge_attr = featurize_walk(args, graph, model, root, proc, mol_feats, feat_lookup)
+                        W_adj = walk_edge_weight(root, graph, model, proc)
+                        X = node_attr
+                        prop = do_predict(predictor, X, edge_index, edge_attr, cuda=args.cuda)
+                        print("predicted prop", prop)
+                        # probs = [W_adj[int(traj[i])][int(traj[(i+1)%len(traj)])] for i in range(len(traj))]
+                        novel.append((name_traj, root, edge_conn, W_adj, prop.detach().numpy()))
+                    new_novel += 1
+                    # p (lambda W_adj,edge_conn,graph:[[a.id,a.val,b.id,b.val,e,W_adj[graph.index_lookup[a.val]][graph.index_lookup[b.val]].item(),W_adj[graph.index_lookup[b.val]][graph.index_lookup[a.val]].item()] for (a,b,e) in edge_conn])(W_adj,edge_conn,graph)                            
+                else:
+                    print(f"{name_traj} discovered")
+            except Exception as e:
+                breakpoint()
+                print(e)
+                continue
+            num_valid += 1
+        index += 1
+        # print(f"add {new_novel} samples, now {len(novel)} novel samples, validity: {num_valid}/{num_tried}")
+    return novel, new_dags, trajs
+
+
+
+def load_dags(args):
+    data = pickle.load(open(args.dags_file, 'rb'))    
+    data_copy = deepcopy(data)
+    dags = []
+    for k, v in data.items():
+        grps, root_node, conn = v
+        # root_node, leaf_node, e = conn[-1]
+        # assert root_node.id == 0
+        # leaf_node.add_child((root_node, e)) # breaks dag
+        # root_node.parent = (leaf_node, e)
+        # if root_node.children:
+        root_node.dag_id = k
+        dags.append(root_node)
+    return dags    
 
 
 def main(args):
@@ -1048,7 +1194,9 @@ def main(args):
     if args.diffusion_side_chains:
         layer = side_chain_grammar(index_lookup, args.log_folder)
 
-    novel = sample_walks(G, graph, walks, model, all_nodes, r_lookup, predefined_graph)                
+    dags = load_dags(args)
+    seen_dags = deepcopy(dags)
+    novel, new_dags, trajs = sample_walks(args, G, graph, seen_dags, model, all_nodes, r_lookup, predefined_graph)                
 
     all_walks = {}
     write_conn = lambda conn: [(str(a.id), str(b.id), a.val, b.val, str(e), predefined_graph[a.val][b.val][e]) for (a,b,e) in conn]
@@ -1085,6 +1233,7 @@ if __name__ == "__main__":
     parser.add_argument('--alpha', dest='diffusion_alpha', default=1e-4, type=float)
     parser.add_argument('--opt', dest='diffusion_opt', default='adam')
     parser.add_argument('--num_epochs', dest='diffusion_num_epochs', default=500, type=int)
-
+    # sampling params
+    parser.add_argument('--num_generate_samples', type=int, default=15)    
     args = parser.parse_args()
     main(args)

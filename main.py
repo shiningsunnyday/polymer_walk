@@ -3,7 +3,8 @@ import pickle
 import random
 import networkx as nx
 from utils import *
-from diffusion import L_grammar, Predictor, DiffusionGraph, DiffusionProcess, sample_walk, process_good_traj, get_repr, state_to_probs, append_traj, walk_edge_weight
+from diffusion import L_grammar, Predictor, DiffusionGraph, DiffusionProcess, \
+sample_walks, process_good_traj, get_repr, state_to_probs, append_traj, walk_edge_weight, load_dags, featurize_walk, do_predict, W_to_attr
 import json
 import torch
 import time
@@ -24,6 +25,7 @@ from tqdm import tqdm
 
 class WalkDataset(Dataset):
     def __init__(self, 
+                 args,
                  dags, 
                  procs,
                  props, 
@@ -31,6 +33,7 @@ class WalkDataset(Dataset):
                  model, 
                  mol_feats, 
                  feat_lookup):
+        self.args = args
         self.props = props
         self.dags = dags
         self.procs = procs
@@ -46,7 +49,8 @@ class WalkDataset(Dataset):
 
     def __getitem__(self, idx):
         assert len(self.procs[idx]) == 1
-        node_attr, edge_index, edge_attr = featurize_walk(self.graph,
+        node_attr, edge_index, edge_attr = featurize_walk(self.args,
+                                                          self.graph,
                                                           self.model, 
                                                           self.dags[idx], 
                                                           self.procs[idx][0], 
@@ -84,10 +88,10 @@ def train_sgd(args,
         for proc in procs:
             start_feat_time = time.time()
             if args.update_grammar or args.mol_feat == 'emb':
-                node_attr, edge_index, edge_attr = featurize_walk(graph, model, dags_copy_train[ind], proc, mol_feats, feat_lookup)
+                node_attr, edge_index, edge_attr = featurize_walk(args, graph, model, dags_copy_train[ind], proc, mol_feats, feat_lookup)
             else:
                 if ind not in train_feat_cache:
-                    node_attr, edge_index, edge_attr = featurize_walk(graph, model, dags_copy_train[ind], proc, mol_feats, feat_lookup)
+                    node_attr, edge_index, edge_attr = featurize_walk(args, graph, model, dags_copy_train[ind], proc, mol_feats, feat_lookup)
                     node_attr, edge_index, edge_attr = node_attr.detach(), edge_index.detach(), edge_attr.detach()
                     train_feat_cache[ind] = (node_attr, edge_index, edge_attr)                      
                 node_attr, edge_index, edge_attr = train_feat_cache[ind]
@@ -148,13 +152,13 @@ def eval_sgd(args,
         for i in tqdm(range(len(dags_copy_test))):     
             assert len(all_procs[i]) == 1
             if args.update_grammar or args.mol_feat == 'emb':
-                node_attr, edge_index, edge_attr = featurize_walk(graph, model, dags_copy_test[i], all_procs[i][0], mol_feats, feat_lookup)
+                node_attr, edge_index, edge_attr = featurize_walk(args, graph, model, dags_copy_test[i], all_procs[i][0], mol_feats, feat_lookup)
             else:
                 if i in test_feat_cache:
                     node_attr, edge_index, edge_attr = test_feat_cache[i]
                     assert node_attr.requires_grad == False
                 else:
-                    node_attr, edge_index, edge_attr = featurize_walk(graph, model, dags_copy_test[i], all_procs[i][0], mol_feats, feat_lookup)
+                    node_attr, edge_index, edge_attr = featurize_walk(args, graph, model, dags_copy_test[i], all_procs[i][0], mol_feats, feat_lookup)
                     test_feat_cache[i] = (node_attr, edge_index, edge_attr)                
             X = node_attr
             if args.plot_feats:
@@ -237,56 +241,6 @@ def train_batch(args,
     return train_loss_history
 
 
-
-def featurize_walk(graph, model, dag, proc, mol_feats, feat_lookup={}):
-    """
-    graph: DiffusionGraph
-    model: L_grammar
-    dag: Node
-    proc: DiffusionProcess
-    mol_feats: (len(graph.graph), dim) features of groups on graph.graph
-    feat_lookup: features of isolated groups not on graph.graph
-    """
-    if dag.children:
-        try:
-            W_adj = walk_edge_weight(dag, graph, model, proc)
-        except:
-            breakpoint()
-        # GNN with edge weight
-        node_attr, edge_index, edge_attr = W_to_attr(args, W_adj, mol_feats)
-    else:
-        assert feat_lookup, "need features for isolated groups"
-        assert dag.val not in graph.graph
-        assert len(proc.dfs_order) == 1
-        N = len(graph.graph)
-        W_adj = torch.zeros((N, N), dtype=torch.float32)                
-        if isinstance(feat_lookup[dag.val], torch.Tensor):
-            feat = feat_lookup[dag.val][None]
-            mol_isolated_feats = torch.tile(feat,[N,1])
-        else:
-            feat = feat_lookup[dag.val][None].astype('float32')
-            mol_isolated_feats = np.tile(feat,[N,1])
-        node_attr, edge_index, edge_attr = W_to_attr(args, W_adj, mol_isolated_feats)
-        assert edge_index.shape[1] == 0
-        edge_index = torch.tensor([[0], [0]], dtype=torch.int64) # trivial self-connection for gnn
-        edge_attr = torch.tensor([[1.]])
-    if hasattr(dag, 'smiles'):
-        dag_mol = Chem.MolFromSmiles(dag.smiles)
-        # if dag_mol is None: # try smarts
-        #     dag_mol = Chem.MolFromSmarts(dag.smiles)        
-        # else:
-        #     dag_mol = Chem.AddHs(dag_mol)  
-        # try:
-        #     Chem.SanitizeMol(dag_mol)          
-        #     if dag_mol is None:
-        #         breakpoint()
-        #     smiles_fp = torch.as_tensor(mol2fp(dag_mol), dtype=torch.float32)
-        # except:
-        #     smiles_fp = torch.zeros((2048,), dtype=torch.float32)
-        smiles_fp = torch.as_tensor(mol2fp(dag_mol), dtype=torch.float32)
-        node_attr = torch.concat((node_attr, torch.tile(smiles_fp, (node_attr.shape[0],1))), -1)
-    return node_attr, edge_index, edge_attr
-        
 
 
 def idx_partition(data, all_idx, test_size=0.2, train_size=0.8):
@@ -438,14 +392,16 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats, feat_
     if args.batch_size == 1 and args.feat_cache and os.path.exists(args.feat_cache):
         train_feat_cache, test_feat_cache = pickle.load(open(args.feat_cache, 'rb'))        
     if args.batch_size > 1:
-        train_dataset = WalkDataset(dags_copy_train, 
+        train_dataset = WalkDataset(args,
+                            dags_copy_train, 
                             all_procs_train,
                             norm_props_train,                           
                             graph, 
                             model, 
                             mol_feats, 
                             feat_lookup)
-        test_dataset = WalkDataset(dags_copy_test, 
+        test_dataset = WalkDataset(args,
+                            dags_copy_test, 
                             all_procs_test,
                             norm_props_test,                           
                             graph, 
@@ -751,44 +707,7 @@ def preprocess_data(all_dags, args, logs_folder):
     return props, norm_props, dags, mask
 
 
-def do_predict(predictor, X, edge_index, edge_attr, batch=None, cuda=-1, return_feats=False):
-    if cuda > -1:
-        X, edge_index, edge_attr = X.to(f"cuda:{cuda}"), edge_index.to(f"cuda:{cuda}"), edge_attr.to(f"cuda:{cuda}")
-    # try modifying X based on edge_attr
-    if return_feats:
-        out, feats = predictor(X, edge_index, edge_attr, return_feats=return_feats)
-        if batch:
-            breakpoint()
-        else:
-            node_mask = torch.unique(edge_index)
-            feats = feats[node_mask] if predictor.share_params else [h[node_mask] for h in feats]
-    y_hat = predictor(X, edge_index, edge_attr)
-    if batch is None:
-        node_mask = torch.unique(edge_index)
-        y_hat = y_hat[node_mask]        
-        out = y_hat.mean(axis=0)
-    else:
-        node_mask = torch.unique(edge_index)
-        batch = batch[node_mask]
-        y_hat = y_hat[node_mask]
-        mean_aggr = aggr.MeanAggregation()        
-        out = mean_aggr(y_hat, batch)
-    if return_feats:
-        return (out, feats)
-    else:
-        return out
 
-
-def W_to_attr(args, W_adj, mol_feats):
-    edge_index = W_adj.nonzero().T
-    edge_attr = W_adj.flatten()[W_adj.flatten()>0][:, None]    
-    if args.mol_feat == 'W':
-        node_attr = W_adj
-    else:
-        node_attr = torch.as_tensor(mol_feats)
-    if args.feat_concat_W:
-        node_attr = torch.concat([node_attr, W_adj], dim=-1)
-    return node_attr, edge_index, edge_attr
 
 
 
@@ -869,18 +788,7 @@ def main(args):
             # Optimize Loss(S^(t-1)+alpha*L(;S^(t-1)), S^(t))
 
     # in: graph G, n walks, m groups, F, f, E edge weights
-    data = pickle.load(open(args.dags_file, 'rb'))    
-    data_copy = deepcopy(data)
-    dags = []
-    for k, v in data.items():
-        grps, root_node, conn = v
-        # root_node, leaf_node, e = conn[-1]
-        # assert root_node.id == 0
-        # leaf_node.add_child((root_node, e)) # breaks dag
-        # root_node.parent = (leaf_node, e)
-        # if root_node.children:
-        root_node.dag_id = k
-        dags.append(root_node)
+    dags = load_dags(args)
 
     config_json = json.loads(json.load(open(os.path.join(args.grammar_folder,'config.json'),'r')))
     diffusion_args = {k[len('diffusion_'):]: v for (k, v) in config_json.items() if 'diffusion' in k}
@@ -1014,56 +922,15 @@ def main(args):
         return
        
     graph.reset()
-    trajs = []
-    novel = [] 
  
     seen_dags = deepcopy(dags)
-    new_dags = []
-    walks = set()
- 
-    num_tried, num_valid = 0, 0
-    new_novel = 0
-    index = 0
-    while len(novel) < args.num_generate_samples:                    
-        n = list(G.nodes())[index%len(G)]
-        if ':' in n: continue
-        traj, good = sample_walk(n, G, graph, model, all_nodes, loop_back='group-contrib' in args.walks_file)
-        if not good:
-            breakpoint()            
-        if len(traj) > 1 and good: 
-            num_tried += 1
-            name_traj = process_good_traj(traj, all_nodes)                       
-            assert len(traj) == len(name_traj)                    
-            try: # test for validity
-                root, edge_conn = verify_walk(r_lookup, predefined_graph, name_traj, loop_back='group-contrib' in args.walks_file)
-                DiffusionGraph.value_count(root, {}) # modifies edge_conn with :'s too
-                name_traj = '->'.join(name_traj)
-                trajs.append(name_traj)
-                # print(name_traj, "success")                    
-                if is_novel(seen_dags, root):
-                    seen_dags.append(root)
-                    new_dags.append(root)
-                    print(name_traj, "novel")
-                    walks.add(name_traj)                        
-                    proc = DiffusionProcess(root, graph.index_lookup, **diffusion_args)
-                    node_attr, edge_index, edge_attr = featurize_walk(graph, model, root, proc, mol_feats, feat_lookup)
-                    W_adj = walk_edge_weight(root, graph, model, proc)
-                    X = node_attr
-                    prop = do_predict(predictor, X, edge_index, edge_attr, cuda=args.cuda)
-                    print("predicted prop", prop)
-                    # probs = [W_adj[int(traj[i])][int(traj[(i+1)%len(traj)])] for i in range(len(traj))]
-                    novel.append((name_traj, root, edge_conn, W_adj, prop.detach().numpy()))
-                    new_novel += 1
-                    # p (lambda W_adj,edge_conn,graph:[[a.id,a.val,b.id,b.val,e,W_adj[graph.index_lookup[a.val]][graph.index_lookup[b.val]].item(),W_adj[graph.index_lookup[b.val]][graph.index_lookup[a.val]].item()] for (a,b,e) in edge_conn])(W_adj,edge_conn,graph)                            
-                else:
-                    print(f"{name_traj} discovered")
-            except Exception as e:
-                print(e)
-                continue
-            num_valid += 1
-        index += 1
-        print(f"add {new_novel} samples, now {len(novel)} novel samples, validity: {num_valid}/{num_tried}")
-
+    predict_args = {
+        'predictor': predictor,
+        'diffusion_args': diffusion_args,
+        'mol_feats': mol_feats,
+        'feat_lookup': feat_lookup
+    }
+    novel, new_dags, trajs = sample_walks(args, G, graph, seen_dags, model, all_nodes, r_lookup, predefined_graph, predict_args=predict_args)
     metrics = compute_metrics(args, dags, new_dags)
     json.dump(metrics, open(os.path.join(args.logs_folder, 'metrics.json'), 'w+'))
 
@@ -1073,7 +940,7 @@ def main(args):
     all_walks['old'] = []
     for i, dag in enumerate(dags):
         proc = graph.lookup_process(dag.dag_id)
-        node_attr, edge_index, edge_attr = featurize_walk(graph, model, dag, proc, mol_feats, feat_lookup)
+        node_attr, edge_index, edge_attr = featurize_walk(args, graph, model, dag, proc, mol_feats, feat_lookup)
         X = node_attr
         prop = do_predict(predictor, X, edge_index, edge_attr, cuda=args.cuda)           
         prop_npy = prop.detach().numpy()

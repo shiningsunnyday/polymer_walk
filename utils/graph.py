@@ -9,10 +9,7 @@ from copy import deepcopy
 sys.path.append('/home/msun415/my_data_efficient_grammar/')
 sys.path.append('/research/cbim/vast/zz500/Projects/mhg/ICML2024/my_data_efficient_grammar/')
 
-sys.path.append('/home/msun415/3D-motif-grammar/src/utils')
-sys.path.append('/home/msun415/3D-motif-grammar/src')
-sys.path.append('/home/msun415/3D-motif-grammar')
-from walk import walk_enumerate_mols
+from .walk import walk_enumerate_mols
 # from retro_star.api import planner
 
 

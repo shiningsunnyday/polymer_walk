@@ -9,6 +9,7 @@ import pickle
 import re
 import json
 import matplotlib.colors as mcolors
+from diffusion import L_grammar
 
 base_colors = list(mcolors.TABLEAU_COLORS.values())
 
@@ -45,7 +46,7 @@ if __name__ == "__main__":
     if args.trained_E_file:
         if '.json' in args.trained_E_file:
             E_trained = json.load(open(args.trained_E_file, 'r'))
-        else:
+        else:            
             raise NotImplementedError
             
     dags = {}
