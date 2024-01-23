@@ -924,7 +924,7 @@ def main(args):
                             mols[i-1].GetAtomWithIdx(3).SetFormalCharge(1)
                         elif 'lipophilicity' in args.walks_file and i == 1297:
                             mols[i-1].GetAtomWithIdx(1).SetFormalCharge(1)
-                        else:
+                        elif 'lipophilicity' in args.walks_file:
                             breakpoint()
                         mols[i-1].UpdatePropertyCache()
                         FastFindRings(mols[i-1])
