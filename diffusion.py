@@ -17,6 +17,7 @@ from copy import deepcopy
 from math import factorial
 from torch_geometric.nn.conv import GATConv, GCNConv, TransformerConv, GPSConv
 from models.gnn_conv import MyGINConv as GINConv
+from torch_geometric.nn import aggr
 
 
 class DiffusionProcess:
@@ -624,7 +625,7 @@ def state_to_probs(state, adj=None):
     if adj is not None:
         state[:, adj==0.] = 0.
     if state.sum(axis=-1) > 0:
-        # return F.softmax(state)
+        # return F.softmax(state, dim=-1)
         return state/state.sum(axis=-1)
     else:
         return state
@@ -638,8 +639,10 @@ def state_to_probs(state, adj=None):
     return state/state.sum(axis=-1)
 
 
-def walk_edge_weight(dag, graph, model, proc, eps=1e-6):
+def walk_edge_weight(dag, graph, model, proc, eps=1e-6, return_states=False):
+    G = graph.graph
     N = len(graph.graph)
+    all_nodes = list(G.nodes())
     walk_order = []
     walk_order = proc.dfs_order
     context = torch.zeros((1, N), dtype=torch.float64)
@@ -649,11 +652,23 @@ def walk_edge_weight(dag, graph, model, proc, eps=1e-6):
     t = 0
     state = torch.zeros((1, N), dtype=torch.float64)
     state[0, start_node_ind] = 1.
+    traj = [str(start_node_ind)]
+    if return_states:
+        states = [state.clone().detach().flatten().numpy()]
     for j in range(1, len(walk_order)):
         cur_node_ind = graph.index_lookup[walk_order[j%len(walk_order)].val]   
         # print(f"input state {get_repr(state)}, context {get_repr(context)}, t {t}")               
         update, context = model(state, context, t)                
         state = state_to_probs(state+update, graph.adj[prev_node_ind])
+        if return_states:
+            state_numpy = state.clone().detach().flatten().numpy()
+            for i in range(len(G)):
+                if len(traj) and extract(traj[-1]) == i: # can't loop back to itself if nothing else in between
+                    state_numpy[i] = 0.
+                if check_colon_order(all_nodes, traj, i):
+                    state_numpy[i] = 0. 
+            state_numpy = state_numpy/state_numpy.sum()            
+            states.append(state_numpy)
         # print(f"post state {get_repr(state)}, context {get_repr(context)}, t {t}")  
         # dist = Categorical(state)
         # log_prob = dist.log_prob(cur_node_ind)
@@ -664,11 +679,15 @@ def walk_edge_weight(dag, graph, model, proc, eps=1e-6):
         state = torch.zeros((1, N), dtype=torch.float64)
         state[0, cur_node_ind] = 1.
         prev_node_ind = cur_node_ind  
-    return W_adj 
+        append_traj(traj, cur_node_ind)
+    if return_states:
+        return states, W_adj
+    else:
+        return W_adj 
 
 
 
-def featurize_walk(args, graph, model, dag, proc, mol_feats, feat_lookup={}):
+def featurize_walk(args, graph, model, dag, proc, mol_feats, feat_lookup={}, vis=False):
     """
     graph: DiffusionGraph
     model: L_grammar
@@ -676,12 +695,15 @@ def featurize_walk(args, graph, model, dag, proc, mol_feats, feat_lookup={}):
     proc: DiffusionProcess
     mol_feats: (len(graph.graph), dim) features of groups on graph.graph
     feat_lookup: features of isolated groups not on graph.graph
+    vis: whether to visualize the transition on graph.graph
     """
     if dag.children:
-        try:
-            W_adj = walk_edge_weight(dag, graph, model, proc)
-        except:
-            breakpoint()
+        if vis:
+            states, W_adj = walk_edge_weight(dag, graph, model, proc, return_states=True)            
+            if len(proc.dfs_order) > 2:
+                vis_transitions_on_graph(args, proc.dfs_order, states, graph.graph)           
+        else:
+            W_adj = walk_edge_weight(dag, graph, model, proc)      
         # GNN with edge weight
         node_attr, edge_index, edge_attr = W_to_attr(args, W_adj, mol_feats)
     else:
@@ -989,7 +1011,8 @@ def sample_walk(n, G, graph, model, all_nodes, loop_back=True):
         t += 1
            
         state_numpy = state_numpy/state_numpy.sum()
-        after = np.random.choice(len(state_numpy), p=state_numpy)        
+        after = np.random.choice(state_numpy.argsort()[-4:])
+        # after = np.random.choice(len(state_numpy), p=state_numpy)        
         cur_node_ind = after
         # try:
         #     print(f"post state {get_repr(state)}, context {get_repr(context)}, t {t}")
@@ -1001,7 +1024,6 @@ def sample_walk(n, G, graph, model, all_nodes, loop_back=True):
 
         # self-loop, not allowed!
         if extract(traj[-1]) == after:
-            breakpoint()
             traj.append(str(after))
             break
         
@@ -1080,10 +1102,11 @@ def sample_walks(args, G, graph, seen_dags, model, all_nodes, r_lookup, predefin
         mol_feats = predict_args['mol_feats']
         feat_lookup = predict_args['feat_lookup']
 
-    
     while len(novel) < args.num_generate_samples:                    
         n = list(G.nodes())[index%len(G)]
-        if ':' in n: continue
+        index += 1
+        if ':' in n: 
+            continue
         traj, good = sample_walk(n, G, graph, model, all_nodes, loop_back='group-contrib' in os.environ['dataset'])
         if not good:
             breakpoint()            
@@ -1103,11 +1126,12 @@ def sample_walks(args, G, graph, seen_dags, model, all_nodes, r_lookup, predefin
                     print(name_traj, "novel")    
                     if predict_args:                 
                         proc = DiffusionProcess(root, graph.index_lookup, **diffusion_args)
-                        node_attr, edge_index, edge_attr = featurize_walk(args, graph, model, root, proc, mol_feats, feat_lookup)
+                        vis = hasattr(args, 'vis_walk') and args.vis_walk
+                        node_attr, edge_index, edge_attr = featurize_walk(args, graph, model, root, proc, mol_feats, feat_lookup, vis=vis)
                         W_adj = walk_edge_weight(root, graph, model, proc)
                         X = node_attr
                         prop = do_predict(predictor, X, edge_index, edge_attr, cuda=args.cuda)
-                        print("predicted prop", prop)
+                        # print("predicted prop", prop)
                         # probs = [W_adj[int(traj[i])][int(traj[(i+1)%len(traj)])] for i in range(len(traj))]
                         novel.append((name_traj, root, edge_conn, W_adj, prop.detach().numpy()))
                     new_novel += 1
@@ -1115,11 +1139,9 @@ def sample_walks(args, G, graph, seen_dags, model, all_nodes, r_lookup, predefin
                 else:
                     print(f"{name_traj} discovered")
             except Exception as e:
-                breakpoint()
-                print(e)
+                # print(e)
                 continue
             num_valid += 1
-        index += 1
         # print(f"add {new_novel} samples, now {len(novel)} novel samples, validity: {num_valid}/{num_tried}")
     return novel, new_dags, trajs
 
@@ -1234,6 +1256,6 @@ if __name__ == "__main__":
     parser.add_argument('--opt', dest='diffusion_opt', default='adam')
     parser.add_argument('--num_epochs', dest='diffusion_num_epochs', default=500, type=int)
     # sampling params
-    parser.add_argument('--num_generate_samples', type=int, default=15)    
+    parser.add_argument('--num_generate_samples', type=int, default=15)      
     args = parser.parse_args()
     main(args)

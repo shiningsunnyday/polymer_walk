@@ -3,6 +3,10 @@ import pickle
 import json
 import networkx as nx
 import os
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+from matplotlib.pyplot import figure, text
+
 from .graph import *
 
 import uuid
@@ -12,6 +16,11 @@ from typing import Optional, Union
 import rdkit.Chem as Chem
 from rdkit.Chem import Draw
 import torch
+from tqdm import tqdm
+from time import time
+
+OPTIONS = {'connectionstyle':'arc3,rad=0.2', 'arrowsize':100}
+COLORS = ' rgbcmykw'
 
 
 class MolDrawer:
@@ -220,6 +229,58 @@ def visualize_dag(args, dag_and_props, path):
     mols = load_mols(args.motifs_folder)
     text = mermaid_write(mols, args.out_path, graph, props)    
     SynTreeWriter(prefixer=PrefixWriter(title=f"H2={props[0]}, H2/N2={props[1]}")).write(text).to_file(path)
+
+
+
+def vis_walks_on_graph(args, graph):
+    fig = plt.Figure(figsize=(50, 50))
+    ax = fig.add_subplot()
+    pos = nx.circular_layout(graph)
+    nx.draw(graph, pos, with_labels=True, ax=ax)
+    options = deepcopy(OPTIONS)
+    options['ax'] = ax
+    for edge in tqdm(graph.edges(data=True)):  
+        if 'weight' not in edge[2]: continue
+        weight = edge[2]['weight']
+        color = edge[2]['color']         
+        options['weight'] = weight
+        options['edge_color'] = color
+        nx.draw_networkx_edges(graph, pos, edgelist=[edge], **options)
+    fig.savefig(args.graph_vis_file)
+    print(args.graph_vis_file)
+
+
+def vis_transitions_on_graph(args, walk, states, graph):
+    if len(states) != len(walk):
+        breakpoint()    
+    fig = plt.Figure(figsize=(100, 100))
+    ax = fig.add_subplot()
+    pos = nx.circular_layout(graph)
+    walk_nodes = [w.val for w in walk]
+    node_size = [100000 if n in walk_nodes else 500 for n in graph]
+    nx.draw_networkx_nodes(graph, pos, nodelist=list(graph), node_color='black', node_size=node_size, ax=ax)    
+    nx.draw_networkx_labels(graph, pos, ax=ax, font_color='white', font_size=100, labels={n:n if n in walk_nodes else '' for n in graph})            
+    for i in range(1, len(walk)):        
+        for j in range(len(states[i])):
+            options = deepcopy(OPTIONS)
+            options['ax'] = ax
+            options['edge_color'] = COLORS[i%len(COLORS)]
+            weight = states[i][j].item()
+            options['width'] = min(500*weight, 100)
+            
+            if list(graph)[j] == walk[i].val:    
+                print(weight)
+                options['edge_color'] = 'black'
+                options['arrowsize'] = 500
+                nx.draw_networkx_edges(graph, pos, edgelist=[(walk[i-1].val,list(graph)[j],0)], **options)
+            elif list(graph)[j] in graph[walk[i-1].val]:
+                nx.draw_networkx_edges(graph, pos, edgelist=[(walk[i-1].val,list(graph)[j],0)], **options)                        
+    path = os.path.join(args.logs_folder, f"{time()}.png")
+    fig.savefig(path)
+    print(path)
+        
+        
+
 
 
 if __name__ == "__main__":

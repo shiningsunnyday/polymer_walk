@@ -9,7 +9,7 @@ import pickle
 import re
 import json
 import matplotlib.colors as mcolors
-from diffusion import L_grammar
+from diffusion import L_grammar, DiffusionGraph
 
 base_colors = list(mcolors.TABLEAU_COLORS.values())
 
@@ -42,6 +42,7 @@ if __name__ == "__main__":
     mols = load_mols(args.motifs_folder)
     red_grps = annotate_extra(mols, args.extra_label_path)    
     graph = nx.read_edgelist(args.predefined_graph_file, create_using=nx.MultiDiGraph)    
+    
     r_lookup = r_member_lookup(mols)
     if args.trained_E_file:
         if '.json' in args.trained_E_file:
@@ -128,7 +129,6 @@ if __name__ == "__main__":
 
         for a, b, e in conn:            
             try:
-
                 if args.trained_E_file:
                     graph[a.val][b.val][e]['weight'] = E_trained[a.val][b.val]*5
                     graph[b.val][a.val][e]['weight'] = E_trained[b.val][a.val]*5
@@ -146,21 +146,40 @@ if __name__ == "__main__":
                           
 
     if args.out_path:
-        breakpoint()
+        # breakpoint()
         print(f"processed {len(dags)}/{len(lines)} dags")
         pickle.dump(dags, open(args.out_path, 'wb+'))
         # breakpoint()
 
+    
+    diffusion_graph = DiffusionGraph(roots, graph)
+    graph = diffusion_graph.graph
     # G = nx.MultiDiGraph(e)
-    fig = plt.Figure(figsize=(50, 50))
+    fig = plt.Figure(figsize=(100, 100))
     ax = fig.add_subplot()
     pos = nx.circular_layout(graph)
-    nx.draw(graph, pos, with_labels=True, ax=ax)
-    for edge in tqdm(graph.edges(data=True)):  
-        if 'weight' not in edge[2]: continue
-        weight = edge[2]['weight']
-        color = edge[2]['color']
-        options = {'connectionstyle':'arc3,rad=0.2', 'arrowsize':100, 'width':weight, 'ax':ax, 'edge_color':[color]}
-        nx.draw_networkx_edges(graph, pos, edgelist=[edge], **options)
+    draw_example = False
+    if draw_example:
+        walk_nodes = ['G239','G297','G202']
+        node_size = [100000 if n in walk_nodes else 500 for n in graph]
+        nx.draw_networkx_nodes(graph, pos, ax=ax, node_color='black', node_size=node_size)
+        nx.draw_networkx_nodes(graph, pos, nodelist=list(graph), node_color='black', node_size=node_size, ax=ax)    
+        nx.draw_networkx_labels(graph, pos, ax=ax, font_color='white', font_size=100, labels={n:n if n in walk_nodes else '' for n in graph})         
+        for edge in tqdm(graph.edges(data=True)):  
+            if len(set([edge[0], edge[1]]) & set(walk_nodes)) == 0:
+                continue
+            if 'weight' not in edge[2]: continue
+            weight = edge[2]['weight']
+            color = edge[2]['color']
+            options = {'connectionstyle':'arc3,rad=0.2', 'arrowsize':100, 'width':weight, 'ax':ax, 'edge_color':[color]}
+            nx.draw_networkx_edges(graph, pos, edgelist=[edge], **options)
+    else:
+        nx.draw(graph, pos, with_labels=True, ax=ax)
+        for edge in tqdm(graph.edges(data=True)):  
+            if 'weight' not in edge[2]: continue
+            weight = edge[2]['weight']
+            color = edge[2]['color']
+            options = {'connectionstyle':'arc3,rad=0.2', 'arrowsize':100, 'width':weight, 'ax':ax, 'edge_color':[color]}
+            nx.draw_networkx_edges(graph, pos, edgelist=[edge], **options)        
     fig.savefig(args.graph_vis_file)
     print(args.graph_vis_file)

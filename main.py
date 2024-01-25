@@ -12,7 +12,6 @@ import torch.nn as nn
 from torch.utils.data import Dataset
 from torch_geometric.loader import DataLoader
 from torch_geometric.data import Data
-from torch_geometric.nn import aggr
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import MultiStepLR
 import matplotlib.pyplot as plt
@@ -1215,8 +1214,9 @@ if __name__ == "__main__":
     # sampling params
     parser.add_argument('--num_generate_samples', type=int, default=15)
 
-    # analysis params
+    # analysis and visualization params
     parser.add_argument('--plot_feats', action='store_true')
+    parser.add_argument('--vis_walk', action='store_true')
 
     args = parser.parse_args()
     

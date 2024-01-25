@@ -30,15 +30,15 @@ def join_mols(mol, other, r1, r2, folder=None):
             ed_new.RemoveBond(r_ind, n.GetIdx())
             ed_new.AddBond(n.GetIdx(), r2[i]+sep, order=cur_bond.GetBondType())            
             new_mol = ed_new.GetMol()
-            print(f"removed {(r_ind, n.GetIdx())}")
-            print(f"added {(n.GetIdx(), r2[i]+sep)}")            
+            # print(f"removed {(r_ind, n.GetIdx())}")
+            # print(f"added {(n.GetIdx(), r2[i]+sep)}")            
             if folder: 
                 pass
                 # print(create_stl(new_mol, folder))
     # delete mol's r1
     for r in sorted(r1, key=lambda x:-x):
         ed_new.RemoveAtom(r)
-        print(f"removed {r}")
+        # print(f"removed {r}")
         if folder:     
             pass        
             # print(create_stl(new_mol, folder))        
