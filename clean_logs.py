@@ -9,8 +9,11 @@ if __name__ == "__main__":
     work_dir = args.dir
     for folder in os.listdir(work_dir):
         if folder[:4] != "logs": continue
-        config = json.loads(json.load(open(os.path.join(work_dir, folder, "config.json"))))
-        if 'motifs_folder' in config and 'ptc' in config['motifs_folder']:
+        config_path = os.path.join(work_dir, folder, "config.json")
+        if not os.path.exists(config_path):
+            continue
+        config = json.loads(json.load(open(config_path)))        
+        if 'motifs_folder' in config and 'group-contrib' in config['motifs_folder']:
             print(folder)
         else:
             continue

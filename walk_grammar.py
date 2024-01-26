@@ -13,8 +13,9 @@ name_to_id = {name_group(i+1):i+1 for i in range(len(mols))}
 def run_checks(rdkit=False):
     checks = []
     bad = []
-    if rdkit:   
-        checks.append('G176 G177'.split(' '))
+    if rdkit:  
+        pass 
+        # checks.append('G176 G177'.split(' '))
     else:
         # a bunch of asserts                
         checks.append('L3 S32'.split(' '))

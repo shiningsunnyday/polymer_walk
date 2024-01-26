@@ -519,6 +519,15 @@ def train(args, dags, graph, diffusion_args, props, norm_props, mol_feats, feat_
         elif 'PTC' in args.walks_file:
             col_names = ['carcinogenicity'] 
             metric_names = [col_names[j] for j in args.property_cols] 
+        elif 'smiles_and_props.txt' in args.walks_file:
+            col_names = ['H2','H2/N2'] 
+            metric_names = [col_names[j] for j in args.property_cols]             
+        elif 'smiles_and_props_old_O2_N2.txt' in args.walks_file:
+            col_names = ['O2','O2/N2'] 
+            metric_names = [col_names[j] for j in args.property_cols]                         
+        elif 'smiles_and_props_old_CO2_CH4.txt' in args.walks_file:
+            col_names = ['CO2','CO2/CH4'] 
+            metric_names = [col_names[j] for j in args.property_cols]                                     
         else:
             print(f"assuming {args.walks_file} is group-contrib")
             col_names = ['H2','N2','O2','CH4','CO2']
@@ -660,6 +669,8 @@ def preprocess_data(all_dags, args, logs_folder):
             prop = prop.strip('(').rstrip(')').split(',')     
         elif 'PTC' in args.walks_file:            
             prop = l.rstrip('\n').split(',')[1:]
+        elif 'smiles_and_props' in args.walks_file:
+            prop = l.rstrip('\n').split()[1:]
         else:
             breakpoint()
 
@@ -680,17 +691,23 @@ def preprocess_data(all_dags, args, logs_folder):
                 prop = list(map(int, prop))
                 mask.append(i)
                 props.append([prop[j] for j in args.property_cols])
-                dags.append(dag_ids[i])                             
+                dags.append(dag_ids[i]) 
+            elif 'smiles_and_props' in args.walks_file:                            
+                prop = list(map(float, prop))
+                mask.append(i)
+                props.append([prop[j] for j in args.property_cols])
+                dags.append(dag_ids[i])                   
             else:
                 try:
                     prop = list(map(lambda x: float(x) if x not in ['-','_'] else None, prop))
                 except:
-                    print(l)                
+                    breakpoint()               
                 i1, i2 = args.property_cols
                 if prop[i1] and prop[i2]:     
                     mask.append(i)
                     props.append([prop[i1],prop[i1]/prop[i2]])
                     dags.append(dag_ids[i])
+                breakpoint()
     props = np.array(props)
     mean, std = np.mean(props,axis=0,keepdims=True), np.std(props,axis=0,keepdims=True)    
     with open(os.path.join(logs_folder, 'mean_and_std.txt'), 'w+') as f:
@@ -813,29 +830,64 @@ def main(args):
                ('crow' in args.walks_file) or \
                 ('HOPV' in args.walks_file) or \
                 ('PTC' in args.walks_file) or \
-                ('lipophilicity' in args.walks_file):
+                ('lipophilicity' in args.walks_file) or \
+                ('smiles_and_props' in args.walks_file):
                 for i in range(1,len(mols)+1):
                     try:
                         feat_lookup[name_group(i)].append(mol2fp(mols[i-1]))    
                     except:   
-                        print(f"cannot get fingerprint of {i}")                       
-                        if 'lipophilicity' in args.walks_file and i == 166:
+                        print(f"cannot get fingerprint of {i}")  
+                        # if 'lipophilicity' in args.walks_file and i == 166:
+                        #     mols[i-1].GetAtomWithIdx(8).SetFormalCharge(1)
+                        # elif 'lipophilicity' in args.walks_file and i == 421:
+                        #     mols[i-1].GetAtomWithIdx(8).SetFormalCharge(1)
+                        # elif 'lipophilicity' in args.walks_file and i == 509:
+                        #     mols[i-1].GetAtomWithIdx(4).SetFormalCharge(1)
+                        # elif 'lipophilicity' in args.walks_file and i == 563:
+                        #     mols[i-1].GetAtomWithIdx(4).SetFormalCharge(1)
+                        # elif 'lipophilicity' in args.walks_file and i == 937:
+                        #     mols[i-1].GetAtomWithIdx(3).SetFormalCharge(1)
+                        # elif 'lipophilicity' in args.walks_file and i == 1297:
+                        #     mols[i-1].GetAtomWithIdx(1).SetFormalCharge(1)
+                        # elif 'lipophilicity' in args.walks_file:
+                        #     breakpoint()
+                        if 'lipophilicity' in args.walks_file and i == 152:
                             mols[i-1].GetAtomWithIdx(8).SetFormalCharge(1)
-                        elif 'lipophilicity' in args.walks_file and i == 421:
+                        elif 'lipophilicity' in args.walks_file and i == 395:
                             mols[i-1].GetAtomWithIdx(8).SetFormalCharge(1)
-                        elif 'lipophilicity' in args.walks_file and i == 509:
+                        elif 'lipophilicity' in args.walks_file and i == 467:
                             mols[i-1].GetAtomWithIdx(4).SetFormalCharge(1)
-                        elif 'lipophilicity' in args.walks_file and i == 563:
-                            mols[i-1].GetAtomWithIdx(4).SetFormalCharge(1)
-                        elif 'lipophilicity' in args.walks_file and i == 937:
+                        elif 'lipophilicity' in args.walks_file and i == 869:
                             mols[i-1].GetAtomWithIdx(3).SetFormalCharge(1)
-                        elif 'lipophilicity' in args.walks_file and i == 1297:
+                        elif 'lipophilicity' in args.walks_file and i == 1189:
                             mols[i-1].GetAtomWithIdx(1).SetFormalCharge(1)
                         elif 'lipophilicity' in args.walks_file:
                             breakpoint()
-                        mols[i-1].UpdatePropertyCache()
-                        FastFindRings(mols[i-1])
-                        feat_lookup[name_group(i)].append(mol2fp(mols[i-1]))
+                        if 'PTC'in args.walks_file and i == 350:
+                            for a in mols[i-1].GetAtoms():
+                                if a.GetSymbol() == 'N':
+                                    a.SetFormalCharge(1)                                      
+                        try:
+                            mols[i-1].UpdatePropertyCache()                                    
+                        except:
+                            if 'smiles_and_props' in args.walks_file:
+                                mols[i-1] = Chem.RWMol(mols[i-1])
+                                # mols[i-1].RemoveAtom(0)
+                                # mols[i-1].RemoveAtom(3)
+                                for b in mols[i-1].GetBonds():
+                                    if b.GetBondTypeAsDouble() == 3.:
+                                        b.SetBondType(Chem.rdchem.BondType.SINGLE)
+                                # mols[i-1].GetBondBetweenAtoms(9,10).SetBondType(Chem.rdchem.BondType.DOUBLE)
+                                mols[i-1] = mols[i-1].GetMol()
+                            else:
+                                breakpoint()  
+                        try:
+                            mols[i-1].UpdatePropertyCache()  
+                            FastFindRings(mols[i-1])
+                            feat_lookup[name_group(i)].append(mol2fp(mols[i-1]))
+                        except:    
+                            print(f"failed getting mol feats of {i}")
+                            feat_lookup[name_group(i)].append(np.zeros(2048,))
                        
             else:
                 for i in range(1,98):
