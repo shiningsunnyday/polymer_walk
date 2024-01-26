@@ -584,13 +584,13 @@ def dfs_traverse(walk, loop_back=False):
     prev_node = None
     root_node = None
     conn = []
-    id = 0    
+    id = 0     
     if loop_back and walk[len(walk)-1] != walk[0]: # come back to origin
         walk.append(walk[0])    
     if loop_back:
         walk_len = len(walk)-1
     else:
-        walk_len = len(walk)
+        walk_len = len(walk)    
     for i in range(walk_len):
         if '[' in walk[i]:
             start = walk[i].find('[')
@@ -730,9 +730,9 @@ def verify_edge_conn(graph, conn, r_lookup):
             continue
         red_j1 = graph[a.val][b.val][i]['r_grp_1']
         red_j2 = graph[a.val][b.val][i]['r_grp_2']
-        if not tuple(red_j1) in set(tuple(x) for x in r_lookup[a.val].values()):
+        if not tuple(red_j1) in set(tuple(x) for x in r_lookup[a.val.split(':')[0]].values()):
             breakpoint()
-        if not tuple(red_j2) in set(tuple(x) for x in r_lookup[b.val].values()):
+        if not tuple(red_j2) in set(tuple(x) for x in r_lookup[b.val.split(':')[0]].values()):
             breakpoint()
         if set(red_j1) & used_reds[a.id]:
             continue

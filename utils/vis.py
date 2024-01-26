@@ -279,6 +279,32 @@ def vis_transitions_on_graph(args, walk, states, graph):
     fig.savefig(path)
     print(path)
         
+
+
+def process_good_traj(traj, all_nodes):
+    """
+    take a numbered traj, like ['61', '90', '50[->12->37,->48]', '90']
+    turn it into ['L3','S32','S20[->P14->P39,->S18]','S32']
+    simple string parsing algo is enough
+    """
+    name_traj = []
+    for x in traj:
+        i = 0
+        y = ""
+        while i < len(x):
+            if x[i].isdigit():
+                j = i+1
+                while j < len(x):
+                    if not x[j].isdigit():
+                        break
+                    j += 1
+                y += all_nodes[int(x[i:j])]
+                i = j
+            else:
+                y += x[i]
+                i += 1
+        name_traj.append(y)
+    return name_traj
         
 
 
@@ -287,15 +313,26 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--E_file')
     parser.add_argument('--motifs_folder')
+    parser.add_argument('--extra_label_path')
     parser.add_argument('--predefined_graph_file')
     parser.add_argument('--dags_file')
     parser.add_argument('--out_path')
     args = parser.parse_args()
+    mols = load_mols(args.motifs_folder)
+    red_grps = annotate_extra(mols, args.extra_label_path)  
+    r_lookup = r_member_lookup(mols)    
+    dags = load_dags(args)        
+    graph = DiffusionGraph(dags, graph)     
 
-    dags = json.load(open(args.dags_file, 'r'))
-    os.makedirs(args.out_path, exist_ok=True)
-    for i, dag_and_props in enumerate(dags['old']):
-        visualize_dag(args, dag_and_props, os.path.join(args.out_path, f"old_{i}.md"))
-    for i, dag_and_props in enumerate(dags['novel']):
-        visualize_dag(args, dag_and_props, os.path.join(args.out_path, f"new_{i}.md"))
-        
+    # dags = json.load(open(args.dags_file, 'r'))
+    # os.makedirs(args.out_path, exist_ok=True)
+    # for i, dag_and_props in enumerate(dags['old']):
+    #     visualize_dag(args, dag_and_props, os.path.join(args.out_path, f"old_{i}.md"))
+    # for i, dag_and_props in enumerate(dags['novel']):
+    #     visualize_dag(args, dag_and_props, os.path.join(args.out_path, f"new_{i}.md"))
+    G = nx.read_edgelist(args.predefined_graph_file, create_using=nx.MultiDiGraph)    
+    all_nodes = list(G.nodes())
+    rules = ['G283', 'G6', 'G6:1', 'G6:2'], ['G104', 'G323', 'G105', 'G105:1', 'G105:2', 'G105:3']
+    for rule in rules:
+        breakpoint()
+        root, edge_conn = verify_walk(r_lookup, G, rule, loop_back='group-contrib' in os.environ['dataset'])

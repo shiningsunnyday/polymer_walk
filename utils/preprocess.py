@@ -301,7 +301,8 @@ def annotate_extra(mols, path):
                     red_grp = ''
 
                 labels.append((int(label), red_grp.rstrip('\n')))
-
+    if len(mols) == 0:
+        breakpoint()
     print(len(mols), len(all_labels))
     if volumes: assert len(volumes) == len(mols)
     for i in range(len(all_labels)):

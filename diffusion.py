@@ -18,6 +18,7 @@ from math import factorial
 from torch_geometric.nn.conv import GATConv, GCNConv, TransformerConv, GPSConv
 from models.gnn_conv import MyGINConv as GINConv
 from torch_geometric.nn import aggr
+from multiprocessing import Pool
 
 
 class DiffusionProcess:
@@ -1043,6 +1044,87 @@ def sample_walk(n, G, graph, model, all_nodes, loop_back=True):
     return traj, good
 
 
+def get_state(G, start, after, traj, loop_back):                  
+    state = torch.zeros((1, len(G)), dtype=torch.float64)
+    state[0, after] = 1.
+
+    # self-loop, not allowed!
+    if extract(traj[-1]) == after:
+        traj.append(str(after))
+        return None
+    
+    # loop back, done!
+    if loop_back and after == start:
+        traj.append(str(after))
+        return None
+
+    traj_after = append_traj(traj, after)
+    if loop_back and not traj_after:
+        return None
+    if not loop_back and not traj_after:
+        return None      
+    return state
+
+
+def extract_rule(n, G, graph, model, all_nodes, loop_back=True, max_thresh=0.95, min_thresh=0.1, depth=2):
+    N = len(G)     
+    context = torch.zeros((1, N), dtype=torch.float64)
+    start = graph.index_lookup[n]
+    state = torch.zeros((1, len(G)), dtype=torch.float64)
+    state[0, graph.index_lookup[n]] = 1.
+    traj = [str(start)]
+    cur_node_ind = start    
+    t = 0
+    after = -1
+    good = False   
+    explore = [(traj, state, context, t)]
+    trajs = []
+    while explore:      
+        # print(f"input state {get_repr(state)}, context {get_repr(context)}, t {t}")  
+        traj, state, context, t = explore.pop(-1)    
+        cur_node_ind = state[0].argmax().item()
+        update, context = model(state, context, t)
+        t += 1
+        if not (state>=0).all():
+            breakpoint()                         
+        state = state_to_probs(state+update, graph.adj[cur_node_ind])        
+        state_numpy = state.detach().flatten().numpy()
+        for i in range(len(G)):
+            if len(traj) and extract(traj[-1]) == i: # can't loop back to itself if nothing else in between
+                state_numpy[i] = 0.
+            if check_colon_order(all_nodes, traj, i):
+                state_numpy[i] = 0.                                                   
+        state_numpy = state_numpy/state_numpy.sum()        
+        if not (state_numpy == state_numpy).all():
+            continue         
+        if depth-1 == t:
+            if state_numpy.max() < max_thresh:
+                break
+            else:
+                ind = state_numpy.argmax()
+                traj = deepcopy(traj)
+                if start == 303 and ind == 0:
+                    breakpoint()
+                traj_copy = deepcopy(traj)
+                _ = get_state(G, start, ind, traj, loop_back=loop_back)                
+                if traj_copy == traj:
+                    continue
+                prob = state_numpy.max()
+                print(f"found depth={depth} rule {traj} with prob={prob}")
+                trajs.append((traj_copy, traj))
+        else:
+            inds = np.arange(len(state_numpy))
+            for ind in inds[state_numpy >= min_thresh]:
+                ind_traj = deepcopy(traj)
+                state = get_state(G, start, ind, ind_traj, loop_back=loop_back)
+                if traj == ind_traj:
+                    continue
+                if state is not None:
+                    explore.append((ind_traj, state, context.clone(), t))
+            
+    return trajs
+
+
 def do_predict(predictor, X, edge_index, edge_attr, batch=None, cuda=-1, return_feats=False):
     if cuda > -1:
         X, edge_index, edge_attr = X.to(f"cuda:{cuda}"), edge_index.to(f"cuda:{cuda}"), edge_attr.to(f"cuda:{cuda}")
@@ -1146,6 +1228,25 @@ def sample_walks(args, G, graph, seen_dags, model, all_nodes, r_lookup, predefin
     return novel, new_dags, trajs
 
 
+def extract_rules(args, G, graph, seen_dags, model, all_nodes, r_lookup, predefined_graph, **kwargs):
+    pargs = []
+    for n in G:
+        if ':' in n: 
+            continue
+        pargs.append((n, G, graph, model, all_nodes, 'group-contrib' in os.environ['dataset'], args.max_thresh, args.min_thresh, args.max_rule_depth))
+    # with Pool(5) as p:
+    #     res = p.starmap(extract_rule, tqdm(pargs))
+    res = [extract_rule(*parg) for parg in pargs]
+    trajs = []
+    for r in res:
+        trajs += r
+    return trajs
+    
+
+
+
+
+
 
 def load_dags(args):
     data = pickle.load(open(args.dags_file, 'rb'))    
@@ -1175,19 +1276,7 @@ def main(args):
     index_lookup = dict(zip(graph.nodes(), range(num_nodes)))
     data = pickle.load(open(args.dags_file, 'rb'))
     data_copy = deepcopy(data)
-    dags = []        
-    for k, v in data.items():
-        grps, root_node, conn = v            
-        if 'group-contrib' in args.motifs_folder:
-            root_node, leaf_node, e = conn[-1]
-            assert root_node.id == 0
-            leaf_node.add_child((root_node, e)) # breaks dag
-            root_node.parent = (leaf_node, e)
-            root_node.dag_id = k
-        if root_node.children: # don't diffuse single-group dags
-            dags.append(root_node)
-        
-
+    dags = load_dags(args)        
     graph = DiffusionGraph(dags, graph, **diffusion_args) 
     G = graph.graph
     all_nodes = list(G.nodes())
@@ -1217,24 +1306,60 @@ def main(args):
         layer = side_chain_grammar(index_lookup, args.log_folder)
 
     dags = load_dags(args)
-    seen_dags = deepcopy(dags)
-    novel, new_dags, trajs = sample_walks(args, G, graph, seen_dags, model, all_nodes, r_lookup, predefined_graph)                
+    seen_dags = deepcopy(dags)    
+    if args.extract_rules:        
+        if os.path.exists(args.save_rules_path):
+            all_rules = json.load(open(args.save_rules_path))
+            for d, rules in all_rules.items():
+                for rule_a, rule_b in rules:                    
+                    print(f"{rule_a}=>{rule_b} is valid")
 
-    all_walks = {}
-    write_conn = lambda conn: [(str(a.id), str(b.id), a.val, b.val, str(e), predefined_graph[a.val][b.val][e]) for (a,b,e) in conn]
-    all_walks['old'] = list(data_copy.values())
-    novel = sorted(novel, key=lambda x:len(x[2]))
-    all_walks['novel'] = novel
-    with open(os.path.join(args.log_folder, 'novel.txt'), 'w+') as f:
-        for n in novel:
-            f.write(n[0]+'\n')
-
-    # pickle.dump(novel, open(os.path.join(args.logs_folder, 'novel.pkl', 'wb+')))
-
-    all_walks['old'] = [write_conn(x[-1]) for x in all_walks['old']]
-    all_walks['novel'] = [write_conn(x[-1]) for x in all_walks['novel']]
-    print("novel", novel)
-    json.dump(all_walks, open(os.path.join(args.log_folder, 'all_dags.json'), 'w+'))
+        else:
+            all_rules = {}
+            options = {'max_thresh': args.max_thresh,
+                    'min_thresh': args.min_thresh}
+            for d in range(2, args.max_rule_depth):
+                rules = extract_rules(args, G, graph, seen_dags, model, all_nodes, r_lookup, predefined_graph, depth=d, **options)
+                all_rules[d] = []
+                for rule_a, rule_b in rules:
+                    rule_a = process_good_traj(rule_a, all_nodes)
+                    rule_b = process_good_traj(rule_b, all_nodes)
+                    if len(rule_a) > 1:
+                        try:
+                            verify_walk(r_lookup, G, rule_a, loop_back='group-contrib' in os.environ['dataset'])
+                        except:
+                            print(rule_a, "is invalid")
+                            continue
+                    if len(rule_b) > 1:
+                        try:
+                            verify_walk(r_lookup, G, rule_b, loop_back='group-contrib' in os.environ['dataset'])                           
+                        except:
+                            print(rule_b, "is invalid")
+                            continue                    
+                    all_rules[d].append((rule_a, rule_b))
+            if args.save_rules_path:
+                json.dump(all_rules, open(args.save_rules_path, 'w+'))
+                rules_txt_path = args.save_rules_path.replace('.json', '.txt')
+                f = open(rules_txt_path, 'w+')
+                for d in all_rules:
+                    for rule_a, rule_b in all_rules[d]:
+                        f.write(f"{rule_a}=>{rule_b}\n")
+                f.close()
+    else:
+        novel, new_dags, trajs = sample_walks(args, G, graph, seen_dags, model, all_nodes, r_lookup, predefined_graph)                
+        all_walks = {}
+        write_conn = lambda conn: [(str(a.id), str(b.id), a.val, b.val, str(e), predefined_graph[a.val][b.val][e]) for (a,b,e) in conn]
+        all_walks['old'] = list(data_copy.values())
+        novel = sorted(novel, key=lambda x:len(x[2]))
+        all_walks['novel'] = novel
+        with open(os.path.join(args.log_folder, 'novel.txt'), 'w+') as f:
+            for n in novel:
+                f.write(n[0]+'\n')
+        # pickle.dump(novel, open(os.path.join(args.logs_folder, 'novel.pkl', 'wb+')))
+        all_walks['old'] = [write_conn(x[-1]) for x in all_walks['old']]
+        all_walks['novel'] = [write_conn(x[-1]) for x in all_walks['novel']]
+        print("novel", novel)
+        json.dump(all_walks, open(os.path.join(args.log_folder, 'all_dags.json'), 'w+'))
         
 
 
@@ -1257,5 +1382,12 @@ if __name__ == "__main__":
     parser.add_argument('--num_epochs', dest='diffusion_num_epochs', default=500, type=int)
     # sampling params
     parser.add_argument('--num_generate_samples', type=int, default=15)      
+    # analysis params
+    parser.add_argument('--extract_rules', action='store_true')
+    parser.add_argument('--max_rule_depth', type=int, default=2)
+    parser.add_argument('--save_rules_path')
+    parser.add_argument('--max_thresh', type=float, default=0.9)
+    parser.add_argument('--min_thresh', type=float, default=0.1)
     args = parser.parse_args()
     main(args)
+    
