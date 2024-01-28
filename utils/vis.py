@@ -51,21 +51,38 @@ class MolDrawer:
 
     def plot(self, smiles):
         """Plot smiles as 2d molecules and save to `self.path/subfolder/*.svg`."""
-        self._hash(smiles)
+        if isinstance(smiles[0], str):
+            self._hash(smiles)
 
-        for k, v in self.lookup.items():
-            fname = self.outfolder / f"{v}.svg"
-            mol = Chem.MolFromSmiles(k)
-            # Plot
-            drawer = Draw.rdMolDraw2D.MolDraw2DSVG(300, 150)
-            opts = drawer.drawOptions()
-            drawer.DrawMolecule(mol)
-            drawer.FinishDrawing()
-            p = drawer.GetDrawingText()
+            for k, v in self.lookup.items():
+                fname = self.outfolder / f"{v}.svg"
+                mol = Chem.MolFromSmiles(k)
+                # Plot
+                drawer = Draw.rdMolDraw2D.MolDraw2DSVG(300, 150)
+                opts = drawer.drawOptions()
+                drawer.DrawMolecule(mol)
+                drawer.FinishDrawing()
+                p = drawer.GetDrawingText()
 
-            print(fname)
-            with open(fname, "w") as f:
-                f.write(p)
+                print(fname)
+                with open(fname, "w") as f:
+                    f.write(p)
+        else:
+            self._hash([Chem.MolToSmiles(m) for m in mols])
+            smi_to_mol = dict(zip([Chem.MolToSmiles(m) for m in mols], mols))
+            for k, v in self.lookup.items():
+                fname = self.outfolder / f"{v}.svg"
+                mol = smi_to_mol[k]
+                # Plot
+                drawer = Draw.rdMolDraw2D.MolDraw2DSVG(300, 150)
+                opts = drawer.drawOptions()
+                drawer.DrawMolecule(mol)
+                drawer.FinishDrawing()
+                p = drawer.GetDrawingText()
+
+                print(fname)
+                with open(fname, "w") as f:
+                    f.write(p)
 
         return self
 
@@ -172,22 +189,26 @@ def write_edge(childs, parent):
     NODE_PREFIX = "n"
     out = []
     for c in childs:
-        out += [f"{NODE_PREFIX}{c} <--> {NODE_PREFIX}{parent}"]
+        out += [f"{NODE_PREFIX}{c} --> {NODE_PREFIX}{parent}"]
+        # out += [f"{NODE_PREFIX}{parent} --> {NODE_PREFIX}{c}"]
     return out
 
 
-def mermaid_write(mols, path, graph, props):
+def mermaid_write(mols, path, graph):
     drawer = MolDrawer(path)
-    index_lookup = {name_group(i): mols[i-1] for i in range(1, 98)}
+    index_lookup = {name_group(i): mols[i-1] for i in range(1, len(mols)+1)}
     smis = []
     for node, data in graph.nodes(data=True):
-        mol = index_lookup[data['name']]
-        smi = Chem.MolToSmiles(mol)
+        mol = index_lookup[data['name'].split(':')[0]]
+        # smi = Chem.MolToSmiles(mol)
+        smi = mol
         smis.append((node, smi))
 
     drawer.plot([smi[1] for smi in smis])
     text = []
     for node, smi in smis:
+        if not isinstance(smi, str):
+            smi = Chem.MolToSmiles(smi)
         name = f'"node.smiles"'
         name = f'<img src=""{drawer.outfolder.name}/{drawer.lookup[smi]}.svg"" height=75px/>'
         classdef = "group"
@@ -199,7 +220,7 @@ def mermaid_write(mols, path, graph, props):
         name_a = graph.nodes(data=True)[edge[0]]['name']
         name_b = graph.nodes(data=True)[edge[1]]['name']
         w = edge[2]['w']
-        @subgraph(f'"{name_b}:{edge[1]}->{name_a}:{edge[0]}={w}"')
+        @subgraph(f'"{name_a}:{edge[0]}->{name_b}:{edge[1]}={w}"')
         def __printer():
             return write_edge(
                 [edge[1]],
@@ -209,6 +230,25 @@ def mermaid_write(mols, path, graph, props):
         out = __printer()
         text.extend(out)   
     return text 
+
+
+def visualize_rule(args, title, dag, path):
+    graph = nx.DiGraph()
+    added = set()
+    for (i, edge) in enumerate(dag):    
+        a, b, name_a, name_b, e, w = edge
+        if a not in added:
+            graph.add_node(a, name=name_a)
+            added.add(a)
+        if b not in added:
+            graph.add_node(b, name=name_b)
+            added.add(b)
+        graph.add_edge(a, b, e=e, w="{:.2f}".format(float(w)))
+
+    mols = load_mols(args.motifs_folder)
+    annotate_extra(mols, args.extra_label_path)  
+    text = mermaid_write(mols, args.rule_vis_folder, graph)    
+    SynTreeWriter(prefixer=PrefixWriter(title=title)).write(text).to_file(path)
 
 
 
@@ -256,26 +296,26 @@ def vis_transitions_on_graph(args, walk, states, graph):
     fig = plt.Figure(figsize=(100, 100))
     ax = fig.add_subplot()
     pos = nx.circular_layout(graph)
+    pos['G81'], pos['G250'] = pos['G250'], pos['G81']
     walk_nodes = [w.val for w in walk]
     node_size = [100000 if n in walk_nodes else 500 for n in graph]
     nx.draw_networkx_nodes(graph, pos, nodelist=list(graph), node_color='black', node_size=node_size, ax=ax)    
-    nx.draw_networkx_labels(graph, pos, ax=ax, font_color='white', font_size=100, labels={n:n if n in walk_nodes else '' for n in graph})            
+    nx.draw_networkx_labels(graph, pos, ax=ax, font_color='white', font_size=100, labels={n:n if n in walk_nodes else '' for n in graph})
     for i in range(1, len(walk)):        
         for j in range(len(states[i])):
             options = deepcopy(OPTIONS)
             options['ax'] = ax
             options['edge_color'] = COLORS[i%len(COLORS)]
             weight = states[i][j].item()
-            options['width'] = min(500*weight, 100)
-            
+            options['width'] = min(500*weight, 100)            
             if list(graph)[j] == walk[i].val:    
                 print(weight)
                 options['edge_color'] = 'black'
                 options['arrowsize'] = 500
                 nx.draw_networkx_edges(graph, pos, edgelist=[(walk[i-1].val,list(graph)[j],0)], **options)
             elif list(graph)[j] in graph[walk[i-1].val]:
-                nx.draw_networkx_edges(graph, pos, edgelist=[(walk[i-1].val,list(graph)[j],0)], **options)                        
-    path = os.path.join(args.logs_folder, f"{time()}.png")
+                nx.draw_networkx_edges(graph, pos, edgelist=[(walk[i-1].val,list(graph)[j],0)], **options)                            
+    path = os.path.join(args.vis_folder, f"{time()}.png")
     fig.savefig(path)
     print(path)
         
@@ -332,7 +372,8 @@ if __name__ == "__main__":
     #     visualize_dag(args, dag_and_props, os.path.join(args.out_path, f"new_{i}.md"))
     G = nx.read_edgelist(args.predefined_graph_file, create_using=nx.MultiDiGraph)    
     all_nodes = list(G.nodes())
-    rules = ['G283', 'G6', 'G6:1', 'G6:2'], ['G104', 'G323', 'G105', 'G105:1', 'G105:2', 'G105:3']
-    for rule in rules:
-        breakpoint()
+    rules = ['G333', 'G393', 'G333:1']
+    for i, rule in enumerate(rules):
         root, edge_conn = verify_walk(r_lookup, G, rule, loop_back='group-contrib' in os.environ['dataset'])
+        visualize_dag(args, root, os.path.join(args.out_path, f"rule_{i}.md"))
+        
