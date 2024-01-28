@@ -22,6 +22,12 @@ for f in os.listdir(args.logs):
             config = json.load(open(os.path.join(folder, 'config.json')))
         if 'test_seed' not in config:
             continue
+        if 'motifs_folder' in config:
+            if 'hopv' in config['motifs_folder']:
+                if 'norm_metrics' not in config or not config['norm_metrics']:
+                    continue
+        else:
+            continue
         options = []
         for (option, val) in config.items():
             if val is False or val is None:
@@ -38,9 +44,9 @@ for f in os.listdir(args.logs):
         if test_seed == -1:
             continue        
         if os.path.exists(os.path.join(folder, 'metrics.csv')):
-            metrics = pd.read_csv(os.path.join(folder, 'metrics.csv'), index_col=0)
-            best_metric = metrics[args.rank_metric]    
             try:
+                metrics = pd.read_csv(os.path.join(folder, 'metrics.csv'), index_col=0)
+                best_metric = metrics[args.rank_metric]                    
                 best_epoch = best_metric.argmin()
             except:
                 continue
