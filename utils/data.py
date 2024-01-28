@@ -9,6 +9,7 @@ import os
 import fcntl
 import time
 
+
 def lock(f):
     try:
         fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)

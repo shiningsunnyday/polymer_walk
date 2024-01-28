@@ -6,7 +6,10 @@ from rdkit.Chem.rdmolops import FastFindRings
 from collections import defaultdict
 import re
 import networkx as nx
+import numpy as np
 from data import *
+import torch.nn as nn
+import torch
 
 sanitize_names = SanitizeFlags.names
 sanitize_values = SanitizeFlags.values
@@ -21,6 +24,85 @@ def name_group(m):
         return prefix(m)+f"{m if m<=41 else m-41 if m<=73 else m-73}"
     else:
         return f"G{m}" # not group contrib
+
+
+
+def preprocess_data(all_dags, args, logs_folder):
+    lines = open(args.walks_file).readlines()
+    props = []
+    dag_ids = {}
+    dags = []
+    mask = []
+    for dag in all_dags:
+        dag_ids[dag.dag_id] = dag
+    for i, l in enumerate(lines):        
+        if i not in dag_ids: continue
+        if 'permeability' in args.walks_file:            
+            prop = l.rstrip('\n').split(',')[1:]
+        elif 'crow' in args.walks_file:                 
+            prop = l.rstrip('\n').split(',')[1:]
+        elif 'HOPV' in args.walks_file:          
+            prop = l.rstrip('\n').split(',')[1:]     
+        elif 'lipophilicity' in args.walks_file:
+            prop = l.rstrip('\n').split(',')[1:]
+        elif 'polymer_walks' in args.walks_file:
+            prop = l.rstrip('\n').split(' ')[-1]
+            prop = prop.strip('(').rstrip(')').split(',')     
+        elif 'PTC' in args.walks_file:            
+            prop = l.rstrip('\n').split(',')[1:]
+        elif 'smiles_and_props' in args.walks_file:
+            prop = l.rstrip('\n').split()[1:]
+        else:
+            breakpoint()
+
+        if args.property_cols:
+            if 'permeability' in args.walks_file:
+                prop = list(map(float, prop))
+                mask.append(i)
+                props.append([prop[j] for j in args.property_cols])
+                dags.append(dag_ids[i])
+            elif 'crow' in args.walks_file or 'HOPV' in args.walks_file or 'lipophilicity' in args.walks_file:
+                assert len(args.property_cols) == 1
+                assert len(prop) == 1
+                prop = list(map(float, prop))
+                mask.append(i)
+                props.append([prop[j] for j in args.property_cols])
+                dags.append(dag_ids[i])     
+            elif 'PTC' in args.walks_file:
+                prop = list(map(int, prop))
+                mask.append(i)
+                props.append([prop[j] for j in args.property_cols])
+                dags.append(dag_ids[i]) 
+            elif 'smiles_and_props' in args.walks_file:                            
+                prop = list(map(float, prop))
+                mask.append(i)
+                props.append([prop[j] for j in args.property_cols])
+                dags.append(dag_ids[i])                   
+            else:
+                try:
+                    prop = list(map(lambda x: float(x) if x not in ['-','_'] else None, prop))
+                except:
+                    breakpoint()               
+                i1, i2 = args.property_cols
+                if prop[i1] and prop[i2]:     
+                    mask.append(i)
+                    props.append([prop[i1],prop[i1]/prop[i2]])
+                    dags.append(dag_ids[i])
+    props = np.array(props)
+    mean, std = np.mean(props,axis=0,keepdims=True), np.std(props,axis=0,keepdims=True)    
+    with open(os.path.join(logs_folder, 'mean_and_std.txt'), 'w+') as f:
+        for i in range(props.shape[-1]):                
+            f.write(f"{mean[0,i]} {std[0,i]}\n")
+    
+    if args.task == 'regression':
+        norm_props = torch.FloatTensor((props-mean)/std)
+    else:
+        norm_props = torch.FloatTensor(props)
+    if hasattr(args, 'cuda') and args.cuda > -1:
+        norm_props = norm_props.to(f"cuda:{args.cuda}")
+    return props, norm_props, dags, mask
+
+
 
 
 

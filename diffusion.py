@@ -1310,9 +1310,10 @@ def attach_smiles(args, all_dags):
     if 'polymer_walks' in args.walks_file:
         assert hasattr(args, 'smiles_file')
         all_smiles = open(args.smiles_file).readlines()
-        assert len(all_smiles) == len(lines)
+        if len(dag_ids) != len(all_smiles):
+            breakpoint()
         polymer_smiles = {}
-        for i, l in enumerate(all_smiles):
+        for i, l in zip(dag_ids, all_smiles):
             if l == '\n':
                 smiles = ''
             else:
@@ -1331,6 +1332,8 @@ def attach_smiles(args, all_dags):
             smiles = l.rstrip('\n').split(',')[0]
         elif 'lipophilicity' in args.walks_file:
             smiles = l.rstrip('\n').split(',')[0]
+        elif 'smiles_and_props' in args.walks_file:
+            smiles = l.rstrip('\n').split()[0]
         else:
             breakpoint()
         if args.concat_mol_feats:

@@ -3,7 +3,7 @@ import pickle
 import random
 import networkx as nx
 from utils import *
-from diffusion import L_grammar, Predictor, DiffusionGraph, DiffusionProcess, sample_walk, process_good_traj, get_repr, state_to_probs, append_traj, walk_edge_weight
+from diffusion import L_grammar, Predictor, DiffusionGraph, DiffusionProcess, sample_walk, process_good_traj, get_repr, state_to_probs, append_traj, walk_edge_weight, preprocess_data, attach_smiles
 import json
 import torch
 import time
@@ -410,13 +410,18 @@ def train(args, dags, props, norm_props):
     for i in tqdm(range(len(dags_copy_train))):
         feat = make_feats(args, dags_copy_train[i])
         X_train.append(feat)
-        y_train.append(norm_props_train[i])
+        if isinstance(norm_props_train[i], torch.Tensor):
+            y_train.append(norm_props_train[i].numpy())
+        else:
+            y_train.append(norm_props_train[i])
     X_test, y_test = [], []
     for i in tqdm(range(len(dags_copy_test))):
         feat = make_feats(args, dags_copy_test[i])
         X_test.append(feat)
-        y_test.append(norm_props_test[i])       
-
+        if isinstance(norm_props_test[i], torch.Tensor):
+            y_test.append(norm_props_test[i].numpy())
+        else:
+            y_test.append(norm_props_test[i])       
     X_train, y_train = np.array(X_train), np.array(y_train)
     X_test, y_test = np.array(X_test), np.array(y_test)
     predictor.fit(X_train, y_train)
@@ -451,6 +456,15 @@ def train(args, dags, props, norm_props):
     elif 'PTC' in args.walks_file:
         col_names = ['carcinogenicity'] 
         metric_names = [col_names[j] for j in args.property_cols] 
+    elif 'smiles_and_props.txt' in args.walks_file:
+        col_names = ['H2','H2/N2'] 
+        metric_names = [col_names[j] for j in args.property_cols]             
+    elif 'smiles_and_props_old_O2_N2.txt' in args.walks_file:
+        col_names = ['O2','O2/N2'] 
+        metric_names = [col_names[j] for j in args.property_cols]                         
+    elif 'smiles_and_props_old_CO2_CH4.txt' in args.walks_file:
+        col_names = ['CO2','CO2/CH4'] 
+        metric_names = [col_names[j] for j in args.property_cols]        
     else:
         print(f"assuming {args.walks_file} is group-contrib")
         col_names = ['H2','N2','O2','CH4','CO2']
@@ -497,73 +511,6 @@ def train(args, dags, props, norm_props):
     print(os.path.join(args.logs_folder, 'metrics.csv'))
 
 
-def preprocess_data(all_dags, args, logs_folder):
-    lines = open(args.walks_file).readlines()
-    props = []
-    dag_ids = {}
-    dags = []
-    mask = []
-    for dag in all_dags:
-        dag_ids[dag.dag_id] = dag
-    for i, l in enumerate(lines):        
-        if i not in dag_ids: continue
-        if 'permeability' in args.walks_file:            
-            prop = l.rstrip('\n').split(',')[1:]
-        elif 'crow' in args.walks_file:                 
-            prop = l.rstrip('\n').split(',')[1:]
-        elif 'HOPV' in args.walks_file:          
-            prop = l.rstrip('\n').split(',')[1:]     
-        elif 'lipophilicity' in args.walks_file:
-            prop = l.rstrip('\n').split(',')[1:]
-        elif 'polymer_walks' in args.walks_file:
-            prop = l.rstrip('\n').split(' ')[-1]
-            prop = prop.strip('(').rstrip(')').split(',')     
-        elif 'PTC' in args.walks_file:            
-            prop = l.rstrip('\n').split(',')[1:]
-        else:
-            breakpoint()
-
-        if args.property_cols:
-            if 'permeability' in args.walks_file:
-                prop = list(map(float, prop))
-                mask.append(i)
-                props.append([prop[j] for j in args.property_cols])
-                dags.append(dag_ids[i])
-            elif 'crow' in args.walks_file or 'HOPV' in args.walks_file or 'lipophilicity' in args.walks_file:
-                assert len(args.property_cols) == 1
-                assert len(prop) == 1
-                prop = list(map(float, prop))
-                mask.append(i)
-                props.append([prop[j] for j in args.property_cols])
-                dags.append(dag_ids[i])     
-            elif 'PTC' in args.walks_file:
-                prop = list(map(int, prop))
-                mask.append(i)
-                props.append([prop[j] for j in args.property_cols])
-                dags.append(dag_ids[i])                             
-            else:
-                try:
-                    prop = list(map(lambda x: float(x) if x not in ['-','_'] else None, prop))
-                except:
-                    print(l)                
-                i1, i2 = args.property_cols
-                if prop[i1] and prop[i2]:     
-                    mask.append(i)
-                    props.append([prop[i1],prop[i1]/prop[i2]])
-                    dags.append(dag_ids[i])
-    props = np.array(props)
-    mean, std = np.mean(props,axis=0,keepdims=True), np.std(props,axis=0,keepdims=True)    
-    with open(os.path.join(logs_folder, 'mean_and_std.txt'), 'w+') as f:
-        for i in range(props.shape[-1]):                
-            f.write(f"{mean[0,i]} {std[0,i]}\n")
-    
-    if args.task == 'regression':
-        norm_props = (props-mean)/std
-    else:
-        norm_props = props
-
-    return props, norm_props, dags, mask
-
 
 def do_predict(predictor, X, edge_index, edge_attr, batch=None, cuda=-1, return_feats=False):
     if cuda > -1:
@@ -605,40 +552,6 @@ def W_to_attr(args, W_adj, mol_feats):
     return node_attr, edge_index, edge_attr
 
 
-
-def attach_smiles(args, all_dags):
-    lines = open(args.walks_file).readlines()
-    dag_ids = {}
-    for dag in all_dags:
-        dag_ids[dag.dag_id] = dag
-    if 'polymer_walks' in args.walks_file:
-        assert hasattr(args, 'smiles_file')
-        all_smiles = open(args.smiles_file).readlines()
-        assert len(dag_ids) == len(all_smiles)
-        polymer_smiles = {}
-        for i, l in zip(dag_ids, all_smiles):
-            if l == '\n':
-                smiles = ''
-            else:
-                smiles = l.split(',')[0]
-            polymer_smiles[i] = smiles
-    for i, l in enumerate(lines):        
-        if i not in dag_ids: continue
-        if 'permeability' in args.walks_file:
-            smiles = l.rstrip('\n').split(',')[0]
-        elif 'crow' in args.walks_file or 'HOPV' in args.walks_file:
-            smiles = l.rstrip('\n').split(',')[0]
-        elif 'polymer_walks' in args.walks_file:
-            if args.concat_mol_feats:
-                smiles = polymer_smiles[i]
-        elif 'PTC' in args.walks_file:
-            smiles = l.rstrip('\n').split(',')[0]
-        elif 'lipophilicity' in args.walks_file:
-            smiles = l.rstrip('\n').split(',')[0]
-        else:
-            breakpoint()
-        if args.concat_mol_feats:
-            dag_ids[i].smiles = smiles   
 
 
 
