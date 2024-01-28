@@ -4,11 +4,8 @@ from itertools import product, permutations
 import random
 import networkx as nx
 from networkx.algorithms.isomorphism import GraphMatcher
-import sys
+from rdkit.Chem import AllChem, DataStructs
 from copy import deepcopy
-sys.path.append('/home/msun415/my_data_efficient_grammar/')
-sys.path.append('/research/cbim/vast/zz500/Projects/mhg/ICML2024/my_data_efficient_grammar/')
-
 from .walk import walk_enumerate_mols
 # from retro_star.api import planner
 
@@ -492,6 +489,20 @@ def extract(x):
     return int(x.split('[')[0]) if '[' in x else int(x)
 
 
+def extract_inner(x):
+    assert '[' in x
+    assert ']' in x
+    return x[x.find('[')+1:x.find(']')]
+
+
+def linearize(x):
+    # A[->C->D] => A->C->D
+    # A[->C] => A-.C
+    assert ',' not in x
+    pass
+
+
+
 def search_walk(i, walk, graph, cur):
     if i == len(walk)-1: return cur
     breakpoint()
@@ -566,7 +577,7 @@ def bfs_traverse(G, graph):
 
 def dfs_traverse(walk, loop_back=False):
     """
-    walk can be a list, e.g. [L3, S32, S20[->S1,->S1], S32, >L3]
+    walk can be a list, e.g. [L3, S32, S20[->S1,->S1], S32, L3]
     or a graph, e.g. 
         L3:0->S32:1, 2
         S32:1->S20:2, 2
@@ -588,7 +599,7 @@ def dfs_traverse(walk, loop_back=False):
     if loop_back and walk[len(walk)-1] != walk[0]: # come back to origin
         walk.append(walk[0])    
     if loop_back:
-        walk_len = len(walk)-1
+        walk_len = len(walk)-1 
     else:
         walk_len = len(walk)    
     for i in range(walk_len):
@@ -791,6 +802,8 @@ def verify_walk(r_lookup, graph, walk, loop_back=False):
             chosen_edges, new_mol = walk_enumerate_mols(walk, graph, mols, loop_back=loop_back)
             assert new_mol is not None
             root.smiles = Chem.MolToSmiles(new_mol)
+            if Chem.MolFromSmiles(root.smiles) is None:
+                raise ValueError(root.smiles)
             conn = [(a,b,e) for (a,b), e in zip(conn, chosen_edges)]
             edge_conn = verify_edge_conn(graph, conn, r_lookup)
         else: 
@@ -820,3 +833,5 @@ def mol2fp(mol,nBits=2048):
     arr = np.zeros((1,))
     DataStructs.ConvertToNumpyArray(fp, arr)
     return arr    
+
+

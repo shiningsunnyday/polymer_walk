@@ -1,7 +1,6 @@
 import os
 from rdkit import Chem
 from rdkit.Chem import Draw
-from rdkit.Chem import AllChem, DataStructs
 from rdkit.Chem.rdmolops import SanitizeFlags
 from rdkit.Chem.rdmolops import FastFindRings
 from collections import defaultdict
@@ -22,27 +21,6 @@ def name_group(m):
         return prefix(m)+f"{m if m<=41 else m-41 if m<=73 else m-73}"
     else:
         return f"G{m}" # not group contrib
-
-
-class InternalDiversity():
-    def distance(self, mol1, mol2, dtype="Tanimoto"):
-        assert dtype in ["Tanimoto"]
-        if dtype == "Tanimoto":
-            sim = DataStructs.FingerprintSimilarity(Chem.RDKFingerprint(mol1), Chem.RDKFingerprint(mol2))
-            return 1 - sim
-        else:
-            raise NotImplementedError
-
-    def get_diversity(self, mol_list, dtype="Tanimoto"):
-        similarity = 0
-        mol_list = [AllChem.GetMorganFingerprintAsBitVect(x, 3, 2048) for x in mol_list] 
-        for i in range(len(mol_list)):
-            sims = DataStructs.BulkTanimotoSimilarity(mol_list[i], mol_list[:i])
-            similarity += sum(sims)
-        n = len(mol_list)
-        n_pairs = n * (n - 1) / 2
-        diversity = 1 - similarity / n_pairs
-        return diversity
 
 
 
