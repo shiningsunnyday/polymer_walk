@@ -4,7 +4,7 @@ import random
 import networkx as nx
 from utils import *
 from diffusion import L_grammar, Predictor, DiffusionGraph, DiffusionProcess, \
-sample_walks, process_good_traj, get_repr, state_to_probs, append_traj, walk_edge_weight, load_dags, featurize_walk, do_predict, W_to_attr
+sample_walks, process_good_traj, get_repr, state_to_probs, append_traj, walk_edge_weight, load_dags, featurize_walk, do_predict, W_to_attr, attach_smiles, prune_walk
 import json
 import torch
 import time
@@ -725,75 +725,6 @@ def preprocess_data(all_dags, args, logs_folder):
 
 
 
-
-
-def attach_smiles(args, all_dags):
-    lines = open(args.walks_file).readlines()
-    dag_ids = {}
-    for dag in all_dags:
-        dag_ids[dag.dag_id] = dag
-    if 'polymer_walks' in args.walks_file:
-        assert hasattr(args, 'smiles_file')
-        all_smiles = open(args.smiles_file).readlines()
-        assert len(all_smiles) == len(lines)
-        polymer_smiles = {}
-        for i, l in enumerate(all_smiles):
-            if l == '\n':
-                smiles = ''
-            else:
-                smiles = l.split(',')[0]
-            polymer_smiles[i] = smiles
-    for i, l in enumerate(lines):        
-        if i not in dag_ids: continue
-        if 'permeability' in args.walks_file:
-            smiles = l.rstrip('\n').split(',')[0]
-        elif 'crow' in args.walks_file or 'HOPV' in args.walks_file:
-            smiles = l.rstrip('\n').split(',')[0]
-        elif 'polymer_walks' in args.walks_file:
-            if args.concat_mol_feats:
-                smiles = polymer_smiles[i]
-        elif 'PTC' in args.walks_file:
-            smiles = l.rstrip('\n').split(',')[0]
-        elif 'lipophilicity' in args.walks_file:
-            smiles = l.rstrip('\n').split(',')[0]
-        else:
-            breakpoint()
-        if args.concat_mol_feats:
-            dag_ids[i].smiles = smiles   
-
-
-
-def chamfer_dist(old_dags, new_dags):
-    div = InternalDiversity()
-    dists = []
-    for dag1 in old_dags:
-        dist = []
-        for dag2 in new_dags:
-            mol1 = Chem.MolFromSmiles(dag1.smiles)
-            mol2 = Chem.MolFromSmiles(dag2.smiles)
-            dist.append(div.distance(mol1, mol2))
-        dists.append(dist)
-    dists = np.array(dists)
-    d1 = dists[dists.argmin(axis=0), list(range(dists.shape[1]))].mean()
-    d2 = dists[list(range(dists.shape[0])), dists.argmin(axis=1)].mean()
-    return (d1+d2)/2
-
-
-
-
-def compute_metrics(args, old_dags, new_dags):
-    metrics = {}    
-    metrics['chamfer'] = chamfer_dist(old_dags, new_dags)
-    mols = [Chem.MolFromSmiles(dag.smiles) for dag in new_dags]
-    div = InternalDiversity()
-    metrics['diversity'] = div.get_diversity(mols)
-    # retro_res = [planner.plan(dag.smiles) for dag in new_dags]        
-    # metrics['RS'] = sum([res is not None for res in retro_res])
-    return metrics
-    
-
-
-
 def main(args):
     # Warmup epochs
         # Set E (edge weights), alpha as parameters
@@ -977,11 +908,10 @@ def main(args):
     seen_dags = deepcopy(dags)
     predict_args = {
         'predictor': predictor,
-        'diffusion_args': diffusion_args,
         'mol_feats': mol_feats,
         'feat_lookup': feat_lookup
     }
-    novel, new_dags, trajs = sample_walks(args, G, graph, seen_dags, model, all_nodes, r_lookup, predefined_graph, predict_args=predict_args)
+    novel, new_dags, trajs = sample_walks(args, G, graph, seen_dags, model, all_nodes, r_lookup, diffusion_args, predict_args=predict_args)
     metrics = compute_metrics(args, dags, new_dags)
     json.dump(metrics, open(os.path.join(args.logs_folder, 'metrics.json'), 'w+'))
 
@@ -1106,16 +1036,7 @@ def main(args):
 
         
 
-    def write_conn(conn):
-        proc_conn = []
-        for (a,b,e,w) in conn:
-            a_val = a.val.split(':')[0]
-            b_val = b.val.split(':')[0]
-            if e is not None:
-                e = predefined_graph[a_val][b_val][e]
-            proc_edge = (str(a.id), str(b.id), a_val, b_val, str(e), e, str(w))                 
-            proc_conn.append(proc_edge)
-        return proc_conn
+
 
     # for k, v in list(data_copy.items()):
     #     if k in mask:
@@ -1140,33 +1061,21 @@ def main(args):
                 print(f"{x[0]},{','.join(list(map(str,novel[i][-1])))}")
 
     if 'group-contrib' in args.walks_file:
-        for x in novel: # (name_traj, root, edge_conn, W_adj, prop)
-            assert not (x[2][-1][0].id and x[2][-1][1].id) # last edge is assumed to have root
-        all_walks['novel'] = [(x[2][:-1], x[-2], x[-1]) for x in novel] # all edges except last edge
+        for name_traj, root, edge_conn, W_adj, prop in novel: # (name_traj, root, edge_conn, W_adj, prop)
+            assert not (edge_conn[-1][0].id and edge_conn[-1][1].id) # last edge is assumed to have root
+        all_walks['novel'] = [(edge_conn[:-1], W_adj, prop) for x in novel] # all edges except last edge
     else:
-        all_walks['novel'] = [(x[2], x[-2], x[-1]) for x in novel] # all edges except last edge
+        for name_traj, root, edge_conn, W_adj, prop in novel:
+            all_walks['novel'] = [(edge_conn, W_adj, prop) for x in novel] # all edges except last edge
 
     # (edge, W_adj, prop) => ([(a,b,e,w)], prop)
     for key in ['old', 'novel']:
-        for i in range(len(all_walks[key])):
-            conn, W, prop = all_walks[key][i]
-            pruned = []
-            for j, edge in enumerate(conn):
-                a, b, e = edge
-                try:
-                    w = W[graph.index_lookup[a.val]][graph.index_lookup[b.val]].item()
-                except:
-                    breakpoint()
-                if key == 'novel' and w == 0.:
-                    breakpoint()
-                pruned.append((a, b, e, w))
-            if 'group-contrib' in args.walks_file and not pruned:
-                breakpoint()
-            all_walks[key][i] = (pruned, prop)
+        all_walks[key] = prune_walk(args, graph, all_walks[key])
                       
     # pickle.dump(novel, open(os.path.join(args.logs_folder, 'novel.pkl', 'wb+')))
-    all_walks['old'] = [[write_conn(x), *list(map(str, prop))] for x, prop in all_walks['old']]
-    all_walks['novel'] = [[write_conn(x), *list(map(str, prop))] for x, prop in all_walks['novel']]
+    breakpoint()
+    all_walks['old'] = [[write_conn(x, G), *list(map(str, prop))] for x, prop in all_walks['old']]
+    all_walks['novel'] = [[write_conn(x, G), *list(map(str, prop))] for x, prop in all_walks['novel']]
     print("novel", novel)
     json.dump(all_walks, open(os.path.join(args.logs_folder, 'all_dags.json'), 'w+'))
     print(f"done! {args.logs_folder}")
@@ -1192,7 +1101,7 @@ def run_tests(graph, all_nodes)                :
 
     # test edge-connection guessing
     # verify_walk(r_lookup, graph.graph, ['S7','S3','S7'], loop_back=True)
-    verify_walk(r_lookup, graph.graph, ['S32','L14','S32'], loop_back=True)
+    # verify_walk(r_lookup, graph.graph, ['S32','L14','S32'], loop_back=True)
 
 
 
@@ -1211,7 +1120,6 @@ if __name__ == "__main__":
     # data params
     parser.add_argument('--predefined_graph_file')    
     parser.add_argument('--dags_file')
-    parser.add_argument('--smiles_file')
     parser.add_argument('--feat_cache', help='where to cache feats')
     parser.add_argument('--walks_file') 
     parser.add_argument('--property_cols', type=int, default=[0,1], nargs='+', 
@@ -1265,11 +1173,12 @@ if __name__ == "__main__":
 
     # sampling params
     parser.add_argument('--num_generate_samples', type=int, default=15)
-
+    parser.add_argument('--softmax', action='store_true')
     # analysis and visualization params
+    
+    parser.add_argument('--vis_folder')
     parser.add_argument('--plot_feats', action='store_true')
     parser.add_argument('--vis_walk', action='store_true')
 
-    args = parser.parse_args()
-    
+    args = parser.parse_args()    
     main(args)
