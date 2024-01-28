@@ -288,7 +288,7 @@ def walk_enumerate_mols(walk, graph, mols, folder=None, loop_back=False):
                                 a, 
                                 b, 
                                 i, 
-                                folder)
+                                folder)        
         return new_chosen_edges[0], new_mols[0]
     else:
         return chosen_edges[0], new_mols[0]
