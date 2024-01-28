@@ -331,15 +331,38 @@ def regress_xgboost(smiles, y, test_idx, return_bst=False):
 
 
 def build_feat(dag):
-    def dfs(cur, feat):
+    visited = {}
+    def dfs(cur, feat, visited):
+        visited[cur.id] = True
         if ':' in cur.val:
             breakpoint()
         index = name_to_idx[cur.val]
         feat[index] += 1
         for child, e in cur.children:
-            dfs(child, feat)
+            if child.id in visited:
+                continue
+            dfs(child, feat, visited)
     feat = [0 for _ in name_to_idx]
-    dfs(dag, feat)
+    dfs(dag, feat, visited)
+    return feat
+
+
+def make_feats(args, dag):
+    feat = build_feat(dag)
+    if args.concat_mol_feats:
+        dag_mol = Chem.MolFromSmiles(dag.smiles)                
+        if dag_mol is None: # try smarts
+            dag_mol = Chem.MolFromSmarts(dag.smiles)        
+        else:
+            dag_mol = Chem.AddHs(dag_mol)  
+        try:
+            Chem.SanitizeMol(dag_mol)          
+            if dag_mol is None:
+                breakpoint()
+            smiles_fp = torch.as_tensor(mol2fp(dag_mol), dtype=torch.float32)
+        except:
+            smiles_fp = torch.zeros((2048,), dtype=torch.float32)            
+        feat = np.concatenate((feat, smiles_fp), 0)    
     return feat
 
 
@@ -385,20 +408,12 @@ def train(args, dags, props, norm_props):
     predictor = XGBRegressor(n_estimators=16, max_depth=10, learning_rate=1)                                 
     X_train, y_train = [], []
     for i in tqdm(range(len(dags_copy_train))):
-        feat = build_feat(dags_copy_train[i])
-        if args.concat_mol_feats:
-            dag_mol = Chem.MolFromSmiles(dags_copy_train[i].smiles)
-            smiles_fp = mol2fp(dag_mol)      
-            feat = np.concatenate((feat, smiles_fp), 0)
+        feat = make_feats(args, dags_copy_train[i])
         X_train.append(feat)
         y_train.append(norm_props_train[i])
     X_test, y_test = [], []
     for i in tqdm(range(len(dags_copy_test))):
-        feat = build_feat(dags_copy_test[i])
-        if args.concat_mol_feats:
-            dag_mol = Chem.MolFromSmiles(dags_copy_test[i].smiles)
-            smiles_fp = mol2fp(dag_mol)                
-            feat = np.concatenate((feat, smiles_fp), 0)
+        feat = make_feats(args, dags_copy_test[i])
         X_test.append(feat)
         y_test.append(norm_props_test[i])       
 
@@ -457,8 +472,6 @@ def train(args, dags, props, norm_props):
             metric.update({f"test_r2_{prop}": r2})
             metric.update({f"test_mae_{prop}": mae})
             metric.update({f"test_mse_{prop}": mse})             
-        for i in range(len(metric_names)):
-            prop = metric_names[i]
             r2 = r2_score(y_train[:,i], y_hat_train[:,i])            
             mae = np.abs(y_hat_train[:,i]-y_train[:,i]).mean()
             mse = ((y_hat_train[:,i]-y_train[:,i])**2).mean()                         
@@ -466,11 +479,22 @@ def train(args, dags, props, norm_props):
             metric.update({f"train_mae_{prop}": mae})
             metric.update({f"train_mse_{prop}": mse})                         
     else:
-        breakpoint()                        
-                                    
+        for i in range(len(metric_names)):
+            prop = metric_names[i]
+            acc = ((y_hat_test[:,i]>0.5) == y_test[:,i]).mean()
+            auc = roc_auc_score(y_test[:,i],y_hat_test[:,i])            
+            metric.update({f"test_acc_{prop}": acc})
+            metric.update({f"test_auc_{prop}": auc})
+            acc = ((y_hat_train[:,i]>0.5) == y_train[:,i]).mean()
+            auc = roc_auc_score(y_train[:,i],y_hat_train[:,i])            
+            metric.update({f"train_acc_{prop}": acc})
+            metric.update({f"train_auc_{prop}": auc})            
+
+
     metrics.append(metric)
     df = pd.DataFrame(metrics)
     df.to_csv(os.path.join(args.logs_folder, 'metrics.csv'))    
+    print(os.path.join(args.logs_folder, 'metrics.csv'))
 
 
 def preprocess_data(all_dags, args, logs_folder):
@@ -590,9 +614,9 @@ def attach_smiles(args, all_dags):
     if 'polymer_walks' in args.walks_file:
         assert hasattr(args, 'smiles_file')
         all_smiles = open(args.smiles_file).readlines()
-        assert len(all_smiles) == len(lines)
+        assert len(dag_ids) == len(all_smiles)
         polymer_smiles = {}
-        for i, l in enumerate(all_smiles):
+        for i, l in zip(dag_ids, all_smiles):
             if l == '\n':
                 smiles = ''
             else:
@@ -675,11 +699,13 @@ def main(args):
 
     predictor_path = os.path.join('./logs/', f'bag_of_motifs_{time.time()}')
     os.makedirs(predictor_path, exist_ok=True)
-    setattr(args, 'logs_folder', predictor_path)        
-    if args.concat_mol_feats:
-        attach_smiles(args, dags)    
+    setattr(args, 'logs_folder', predictor_path)         
     props, norm_props, dags, mask = preprocess_data(dags, args, args.logs_folder)
+    if args.concat_mol_feats:
+        attach_smiles(args, dags)       
     train(args, dags, props, norm_props)
+    with open(os.path.join(predictor_path, 'config.json'), 'w+') as f:
+        json.dump(json.dumps(args.__dict__), f)      
        
 
 
