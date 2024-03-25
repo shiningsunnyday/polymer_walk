@@ -77,12 +77,12 @@ def walk_to_mol(walk, mols, folder=None):
     idxes = extract_idxes(mol)
     while bfs:
         a = bfs[0]
-        bfs.pop(0)
-        breakpoint()
+        bfs.pop(0)        
         for k in edges[a]:
             b, a_name, b_name, _, r_info = k[:5]     
             if vis[b]: 
-                continue            
+                continue  
+            breakpoint()          
             r_info['k1'] = r_info['r_grp_1']+r_info['b1']
             r_info['k2'] = r_info['b2']+r_info['r_grp_2']
             mol_b = deepcopy(mols[idx_mol[b]])   
@@ -142,7 +142,7 @@ def walk_along_edge(mols,
          new_idxes,
          a, b, e, 
          folder=None):
-    r_info = graph[idx_val[a]][idx_val[b]][e]        
+    r_info = graph[idx_val[a]][idx_val[b]][e]    
     r_info['k1'] = r_info['r_grp_1']+r_info['b1']
     r_info['k2'] = r_info['b2']+r_info['r_grp_2']
     # can we connect this way? we need to make sure atoms in r_info['r_grp_1']
@@ -206,12 +206,13 @@ def walk_enumerate_mols(walk, graph, mols, folder=None, loop_back=False):
     edges = defaultdict(list)   
     idx_mol = {}
     idx_val = {}
-    conn_index = {}
+    
     for v in walk:
         idx_mol[v[0]] = name_lookup[v[2]]-1
         idx_mol[v[1]] = name_lookup[v[3]]-1
         idx_val[v[0]] = v[2]
         idx_val[v[1]] = v[3]
+    conn_index = {}
     for ind, v in enumerate(walk):
         if (v[0],v[1]) not in conn_index:
             conn_index[(v[0],v[1])] = ind
@@ -255,13 +256,13 @@ def walk_enumerate_mols(walk, graph, mols, folder=None, loop_back=False):
                                     a, 
                                     b, 
                                     e, 
-                                    folder)
+                                    folder)                    
                 vis[b] = True
             bfs.append(b)  
             if new_mols:         
                 enum_mols, idxes, chosen_edges = new_mols, new_idxes, new_chosen_edges
             else:
-                raise  
+                raise      
     if loop_back:
         # loop back
         a, b = walk[-1][:2]
@@ -288,7 +289,8 @@ def walk_enumerate_mols(walk, graph, mols, folder=None, loop_back=False):
                                 a, 
                                 b, 
                                 i, 
-                                folder)        
+                                folder)  
+        # [Chem.MolFromSmiles(Chem.MolToSmiles(new_mol)) for new_mol in new_mols]
         return new_chosen_edges[0], new_mols[0]
     else:
         return chosen_edges[0], new_mols[0]

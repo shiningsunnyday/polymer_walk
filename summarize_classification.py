@@ -36,17 +36,31 @@ for f in os.listdir(args.logs):
         command = 'python main.py ' + ' '.join(options)
         test_seed = config['test_seed']
         if test_seed == -1:
-            continue        
+            continue       
+        if 'train_size' not in config or config['train_size'] != 1.0:
+            continue         
+        # if 'edge_weights' not in config or not config['edge_weights']: # edge weights
+        #     continue
+        if 'edge_weights' in config and config['edge_weights']: # no edge weights
+            continue
+        # if 'ablate_bidir' not in config or not config['ablate_bidir']: # ablate
+        #     continue     
+        if 'ablate_bidir' in config and config['ablate_bidir']: # don't ablate
+            continue         
         if os.path.exists(os.path.join(folder, 'metrics.csv')):
-            metrics = pd.read_csv(os.path.join(folder, 'metrics.csv'), index_col=0)
-            best_metric = metrics[args.rank_metric]    
+            metrics = pd.read_csv(os.path.join(folder, 'metrics.csv'), index_col=0)            
             try:
+                best_metric = metrics[args.rank_metric]    
                 best_epoch = best_metric.argmax()
             except:
                 continue
             best_metric = best_metric.max()
             best_report_metric = metrics[args.report_metric][best_epoch]
-            if test_seed not in best_metrics or best_metric > best_metrics[test_seed][args.rank_metric]:
+            if test_seed not in best_metrics or best_metric >= best_metrics[test_seed][args.rank_metric]:
+                if test_seed in best_metrics:
+                    if best_metric == best_metrics[test_seed][args.rank_metric]:
+                        if best_report_metric < best_metrics[test_seed][args.report_metric]:
+                            continue
                 best_acc_descr = f"test seed: {test_seed}, best epoch: {best_epoch}, best acc: {best_metric}, best auc: {best_report_metric}"
                 best_acc_descr += f"\nfolder: {folder}"
                 best_acc_descr += f"\ncomamnd: {command}"

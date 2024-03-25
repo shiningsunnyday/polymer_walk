@@ -304,6 +304,30 @@ def load_mols(folder):
 
     return mols
 
+def possible_connections(cur, graph, edge_conn, r_lookup):
+    used_reds = defaultdict(set)
+    for a_id, b_id, a_val, b_val, i in edge_conn:
+        red_j1 = graph[a_val][b_val][i]['r_grp_1']
+        red_j2 = graph[a_val][b_val][i]['r_grp_2']
+        assert tuple(red_j1) in set(tuple(x) for x in r_lookup[a_val].values())
+        assert tuple(red_j2) in set(tuple(x) for x in r_lookup[b_val].values())
+        if set(red_j1) & used_reds[a_id]:
+            breakpoint()
+        if set(red_j2) & used_reds[b_id]:
+            breakpoint()
+        used_reds[a_id] |= set(red_j1)
+        used_reds[b_id] |= set(red_j2)
+    print("pass")
+    poss = []
+    cur_id, cur_val = cur
+    for dest in graph[cur_val]:
+        for e in graph[cur_val][dest]:
+            r_grp = graph[cur_val][dest][e]['r_grp_1']
+            if set(r_grp) & set(used_reds[cur_id]):
+                continue
+            poss.append((dest, e))
+    return poss
+
 
 def load_walks(args):
     walks = []

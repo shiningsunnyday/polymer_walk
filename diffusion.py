@@ -643,7 +643,7 @@ def state_to_probs(state, adj=None, softmax=False):
     return state/state.sum(axis=-1)
 
 
-def walk_edge_weight(dag, graph, model, proc, eps=1e-6, return_states=False):
+def walk_edge_weight(dag, graph, model, proc, eps=1e-6, return_states=False, ablate_bidir=False):
     G = graph.graph
     N = len(graph.graph)
     all_nodes = list(G.nodes())
@@ -678,7 +678,8 @@ def walk_edge_weight(dag, graph, model, proc, eps=1e-6, return_states=False):
         # log_prob = dist.log_prob(cur_node_ind)
         t += 1
         W_adj[prev_node_ind, cur_node_ind] = max(state[0, cur_node_ind], eps)
-        W_adj[cur_node_ind, prev_node_ind] = max(state[0, cur_node_ind], eps)
+        if not ablate_bidir:
+            W_adj[cur_node_ind, prev_node_ind] = max(state[0, cur_node_ind], eps)
         # print(f"recounted {cur_node_ind} with prob {state[0, cur_node_ind]}")        
         state = torch.zeros((1, N), dtype=torch.float64)
         state[0, cur_node_ind] = 1.
@@ -707,7 +708,7 @@ def featurize_walk(args, graph, model, dag, proc, mol_feats, feat_lookup={}, vis
             if len(proc.dfs_order) > 2:
                 vis_transitions_on_graph(args, proc.dfs_order, states, graph.graph)           
         else:
-            W_adj = walk_edge_weight(dag, graph, model, proc)      
+            W_adj = walk_edge_weight(dag, graph, model, proc, ablate_bidir=args.ablate_bidir)      
         # GNN with edge weight
         node_attr, edge_index, edge_attr = W_to_attr(args, W_adj, mol_feats)
     else:
@@ -728,17 +729,17 @@ def featurize_walk(args, graph, model, dag, proc, mol_feats, feat_lookup={}, vis
         edge_attr = torch.tensor([[1.]])
     if hasattr(dag, 'smiles'):
         dag_mol = Chem.MolFromSmiles(dag.smiles)
-        # if dag_mol is None: # try smarts
-        #     dag_mol = Chem.MolFromSmarts(dag.smiles)        
-        # else:
-        #     dag_mol = Chem.AddHs(dag_mol)  
-        # try:
-        #     Chem.SanitizeMol(dag_mol)          
-        #     if dag_mol is None:
-        #         breakpoint()
-        #     smiles_fp = torch.as_tensor(mol2fp(dag_mol), dtype=torch.float32)
-        # except:
-        #     smiles_fp = torch.zeros((2048,), dtype=torch.float32)        
+        if dag_mol is None: # try smarts
+            dag_mol = Chem.MolFromSmarts(dag.smiles)        
+        else:
+            dag_mol = Chem.AddHs(dag_mol)  
+        try:
+            Chem.SanitizeMol(dag_mol)          
+            if dag_mol is None:
+                breakpoint()
+            smiles_fp = torch.as_tensor(mol2fp(dag_mol), dtype=torch.float32)
+        except:
+            smiles_fp = torch.zeros((2048,), dtype=torch.float32)        
         smiles_fp = torch.as_tensor(mol2fp(dag_mol), dtype=torch.float32)
         node_attr = torch.concat((node_attr, torch.tile(smiles_fp, (node_attr.shape[0],1))), -1)
     return node_attr, edge_index, edge_attr
@@ -966,7 +967,8 @@ def append_traj(traj, after):
                 # linearize traj[-1] first
                 sides = traj[-1][traj[-1].find('[')+1:-1].split(',')
                 if len(sides) > 1:
-                    breakpoint()
+                    # raise NotImplementedError
+                    return []
                 traj_side = [f"->{traj[-1][:traj[-1].find('[')]}"] + sides
                 side = ''.join(traj_side)
                 # ->4->25
@@ -980,7 +982,8 @@ def append_traj(traj, after):
                 # => 50[->12->37]          
                 sides = traj[-1][traj[-1].find('[')+1:-1].split(',')
                 if len(sides) > 1:
-                    raise NotImplementedError
+                    # raise NotImplementedError
+                    return []
                 traj_side = [f"->{traj[-1][:traj[-1].find('[')]}"] + sides
                 side = ''.join(traj_side)
                 traj[-2]= f"{traj[-2]}[{side}]"                    
@@ -1206,12 +1209,59 @@ def sample_walks(args, G, graph, seen_dags, model, all_nodes, r_lookup, diffusio
         feat_lookup = predict_args['feat_lookup']
     if not (nx.adjacency_matrix(G).toarray() == graph.adj).all():
         breakpoint()
+    if hasattr(args, 'all_dags_path') and args.all_dags_path:
+        all_dags = json.load(open(args.all_dags_path))
+        novel = all_dags['novel']       
+        for conn in novel:
+            node_label = {}
+            for (src, dest, src_val, dest_val, *_) in conn:
+                node_label[src] = src_val
+                node_label[dest] = dest_val
+            counts = {} 
+            for k,v in node_label.items():
+                counts[v] = counts.get(v, 0)+1
+                node_label[k] = f"{v}"
+                if counts[v]>1:
+                    node_label[k] += f":{counts[v]-1}"
+            g = nx.DiGraph()
+            for k, v in node_label.items():
+                g.add_node(k, val=v) 
+            for (src, dest, src_val, dest_val, e_src, e_dest, _) in conn:
+                assert node_label[src].split(':')[0] == src_val
+                assert node_label[dest].split(':')[0] == dest_val
+                e_src = json_loads(e_src)
+                e_dest = json_loads(e_dest)
+                g.add_edge(src, dest, r_grp_1=e_src['r_grp_1'], b1=e_src['b1'], r_grp_2=e_src['r_grp_2'], b2=e_src['b2'])
+                g.add_edge(dest, src, r_grp_1=e_dest['r_grp_1'], b1=e_dest['b1'], r_grp_2=e_dest['r_grp_2'], b2=e_dest['b2'])
+            breakpoint()
+
+    test_walks = hasattr(args, 'test_walks_file') and args.test_walks_file
+    if test_walks:
+        eval_trajs = [l.rstrip('\n').split(' ') for l in open(args.test_walks_file).readlines()]
+        test_index = 0
+
     while new_novel < args.num_generate_samples:                    
         n = list(G.nodes())[index%len(G)]
         index += 1
         if ':' in n: 
-            continue
-        traj, good = sample_walk(n, G, graph, model, all_nodes, loop_back='group-contrib' in os.environ['dataset'], min_thresh=args.min_thresh, softmax=args.softmax)           
+            continue      
+        if test_walks:
+            if test_index < len(eval_trajs):
+                traj = eval_trajs[test_index]
+                breakpoint()
+                try:
+                    name_traj = process_good_traj(traj, all_nodes)                        
+                    print(f"eval traj {name_traj}")
+                except:
+                    print("eval traj not valid")
+                    breakpoint()                        
+                good = True
+                test_index += 1
+            else:
+                break
+        else:            
+            traj, good = sample_walk(n, G, graph, model, all_nodes, loop_back='group-contrib' in os.environ['dataset'], min_thresh=args.min_thresh, softmax=args.softmax)                   
+            print(traj)
         if len(traj) > 1 and good:
             num_tried += 1
             name_traj = process_good_traj(traj, all_nodes)                        
@@ -1238,9 +1288,8 @@ def sample_walks(args, G, graph, seen_dags, model, all_nodes, r_lookup, diffusio
                 print(name_traj, "novel")    
                 vis = hasattr(args, 'vis_walk') and args.vis_walk               
                 if predict_args:                 
-                    proc = DiffusionProcess(root, graph.index_lookup, **diffusion_args)
-                    if vis:
-                        node_attr, edge_index, edge_attr = featurize_walk(args, graph, model, root, proc, mol_feats, feat_lookup, vis=vis)
+                    proc = DiffusionProcess(root, graph.index_lookup, **diffusion_args)                    
+                    node_attr, edge_index, edge_attr = featurize_walk(args, graph, model, root, proc, mol_feats, feat_lookup, vis=vis)
                     W_adj = walk_edge_weight(root, graph, model, proc)
                     X = node_attr
                     prop = do_predict(predictor, X, edge_index, edge_attr, cuda=args.cuda)
@@ -1249,9 +1298,9 @@ def sample_walks(args, G, graph, seen_dags, model, all_nodes, r_lookup, diffusio
                     novel.append((name_traj, root, edge_conn, W_adj, prop.detach().numpy()))
                 else:
                     proc = DiffusionProcess(root, graph.index_lookup, **diffusion_args)
-                    if vis:
+                    if vis:                        
                         states, W_adj = walk_edge_weight(root, graph, model, proc, return_states=True)
-                        if len(proc.dfs_order) > 2:
+                        if len(proc.dfs_order) > 1:
                             vis_transitions_on_graph(args, proc.dfs_order, states, graph.graph)
                     vis = hasattr(args, 'vis_walk') and args.vis_walk
                     W_adj = walk_edge_weight(root, graph, model, proc)
@@ -1299,7 +1348,7 @@ def load_dags(args):
         # if root_node.children:
         root_node.dag_id = k
         dags.append(root_node)
-    return dags   
+    return data, dags   
 
 
 def attach_smiles(args, all_dags):
@@ -1389,7 +1438,7 @@ def main(args):
     index_lookup = dict(zip(graph.nodes(), range(num_nodes)))
     data = pickle.load(open(args.dags_file, 'rb'))
     data_copy = deepcopy(data)
-    dags = load_dags(args)        
+    _, dags = load_dags(args)        
     graph = DiffusionGraph(dags, graph, **diffusion_args) 
     G = graph.graph
     N = len(G)
@@ -1422,7 +1471,7 @@ def main(args):
     if args.diffusion_side_chains:
         layer = side_chain_grammar(index_lookup, args.log_folder)
 
-    dags = load_dags(args)
+    data, dags = load_dags(args)
     seen_dags = deepcopy(dags)    
     if args.extract_rules:        
         if os.path.exists(args.save_rules_path):
@@ -1477,11 +1526,24 @@ def main(args):
                 f.close()
     else:
         attach_smiles(args, dags)
-        train_data_metrics = compute_metrics(args, None, dags)
-        json.dump(train_data_metrics, open(os.path.join(args.log_folder, 'train_metrics.json'), 'w+'))
-        novel, new_dags, trajs = sample_walks(args, G, graph, seen_dags, model, all_nodes, r_lookup, diffusion_args)                        
-        metrics = compute_metrics(args, dags, new_dags)
-        json.dump(metrics, open(os.path.join(args.log_folder, 'metrics.json'), 'w+'))
+        old_smiles = [dag.smiles for dag in dags]
+        if args.compute_train_metrics:
+            train_data_metrics = compute_metrics(args, mols, None, old_smiles, retro_suffix='_train')
+            json.dump(train_data_metrics, open(os.path.join(args.log_folder, 'train_metrics.json'), 'w+'))
+        # novel, new_dags, trajs = sample_walks(args, G, graph, seen_dags, model, all_nodes, r_lookup, diffusion_args)                        
+        if args.compute_metrics:            
+            new_smiles = [dag.smiles for dag in new_dags]
+            metrics = compute_metrics(args, mols, old_smiles, new_smiles, retro_suffix='_test')
+            json.dump(metrics, open(os.path.join(args.log_folder, 'metrics.json'), 'w+'))
+        for f in args.compute_metrics_baselines:
+            new_smiles = [l.rstrip('\n') for l in open(f).readlines()]
+            suffix = f"_{Path(f).stem}"
+            metrics = compute_metrics(args, mols, old_smiles, new_smiles, retro_suffix=suffix)
+            out_path = os.path.join(Path(f).parent, f'metrics{suffix}.json')
+            json.dump(metrics, open(out_path, 'w+'))
+            print(out_path)
+
+
         all_walks = {}        
         # all_walks['old'] = list(data.values())
         novel = sorted(novel, key=lambda x:len(x[2]))
@@ -1534,7 +1596,7 @@ if __name__ == "__main__":
     parser.add_argument('--dags_file')
     parser.add_argument('--data_file')
     parser.add_argument('--walks_file') 
-    parser.add_argument('--concat_mol_feats', action='store_true')
+    parser.add_argument('--concat_mol_feats', action='store_true')    
     parser.add_argument('--motifs_folder')
     parser.add_argument('--extra_label_path')    
     parser.add_argument('--predefined_graph_file')
@@ -1550,6 +1612,9 @@ if __name__ == "__main__":
     parser.add_argument('--num_epochs', dest='diffusion_num_epochs', default=500, type=int)
     # sampling params
     parser.add_argument('--num_generate_samples', type=int, default=15)      
+    parser.add_argument('--compute_train_metrics', action='store_true', help='compute train metrics')
+    parser.add_argument('--compute_metrics', action='store_true', help='compute test metrics')
+    parser.add_argument('--compute_metrics_baselines', help='if given, compute metrics for these files of smiles', nargs='+')
     parser.add_argument('--softmax', action='store_true')
     # analysis params
     parser.add_argument('--extract_rules', action='store_true')

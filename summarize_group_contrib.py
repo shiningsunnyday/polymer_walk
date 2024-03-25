@@ -24,11 +24,11 @@ for f in os.listdir(args.logs):
             continue
         options = []
         for (option, val) in config.items():
-            if val is False or val is None:
+            if (val != 'share_params' and val is False) or val is None:
                 continue
             if isinstance(val, list):
                 val = ' '.join(map(str, val))
-            if val is True:
+            if (option != 'share_params' and val is True) or (option == 'share_params' and val == False):
                 option_str = f'--{option}'
             else:
                 option_str = f'--{option}'+f' {val}'
@@ -38,7 +38,21 @@ for f in os.listdir(args.logs):
         if test_seed == -1:
             continue   
         if 'norm_metrics' not in config or not config['norm_metrics']:
-            continue             
+            continue      
+        if 'train_size' not in config or float(config['train_size']) != 1.0:
+            continue
+        if 'concat_mol_feats' not in config or config['concat_mol_feats']:
+            continue
+
+        # if 'edge_weights' not in config or not config['edge_weights']: # edge weights
+        #     continue
+        # if 'edge_weights' in config and config['edge_weights']: # no edge weights
+        #     continue
+        # if 'ablate_bidir' not in config or not config['ablate_bidir']: # ablate
+        #     continue     
+        # if 'ablate_bidir' in config and config['ablate_bidir']: # don't ablate
+        #     continue 
+        
         if os.path.exists(os.path.join(folder, 'metrics.csv')):
             try:
                 metrics = pd.read_csv(os.path.join(folder, 'metrics.csv'), index_col=0)
@@ -55,7 +69,10 @@ for f in os.listdir(args.logs):
             if test_seed not in best_metrics or best_metric < best_metrics[test_seed][args.rank_metric]:
                 best_acc_descr = f"test seed: {test_seed}, best epoch: {best_epoch}, best mae: {best_metric}, best r2: {best_report_metric}"
                 # best_acc_descr += f"\nfolder: {folder}"
-                # best_acc_descr += f"\ncomamnd: {command}"
+                command = command.replace('/home/msun415/polymer_walk/data/datasets/group-contrib/', '$dataset')
+                # command = command.replace('data/polymer_walks_v2_preprocess.txt', '$walksfile')
+                # command = command.replace('logs/logs-1703187675.0302503', '$logdir')
+                best_acc_descr += f"\ncomamnd: {command}"
                 best_metrics[test_seed] = {args.rank_metric: best_metric, args.report_metric: best_report_metric}
                 best_metric_descrs[test_seed] = best_acc_descr
 print('\n'.join(list(best_metric_descrs.values())))

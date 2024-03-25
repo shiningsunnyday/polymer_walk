@@ -21,10 +21,10 @@ if __name__ == "__main__":
             config = json.loads(json.load(open(os.path.join(work_dir, folder, "config.json"))))
         except FileNotFoundError:
             continue
-        # if 'motifs_folder' in config and 'hopv' in config['motifs_folder']:
-        #     print(folder)
-        # else:
-        #     continue
+        if 'motifs_folder' in config and 'group-contrib' in config['motifs_folder']:
+            print(folder)
+        else:
+            continue
         if 'motifs_folder' in config:
             if 'ptc' in config['motifs_folder']:
                 continue  
