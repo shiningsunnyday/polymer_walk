@@ -659,7 +659,7 @@ def traverse_dfs(walk, graph, loop_back=False):
         for side, j in neis:
             if vis[j]:
                 if j:
-                    breakpoint()            
+                    continue
                 elif loop_back: # cycle back to root
                     e = walk[cur][j]['e'] 
                     e_cyc = find_e(graph, nodes[cur].val, nodes[j].val, e)       
@@ -770,9 +770,11 @@ def verify_edge_conn(graph, conn, r_lookup):
 def verify_walk(r_lookup, graph, walk, loop_back=False):
     # r_lookup: dict(red group id: atoms)
     # check all edges exist
+    # test_walk = [('0', '1', 'L3', 'S32', 2), ('1', '2', 'S32', 'S20', 2), ('2', '5', 'S20', 'S32', 2), ('2', '3', 'S20', 'S1', 1), ('2', '4', 'S20', 'S1', 4)]
+    # possible_connections(('5', 'S32'), graph, test_walk, r_lookup)
     try:         
-        if isinstance(walk, nx.Graph):
-            root, edge_conn = traverse_dfs(walk, graph, loop_back=loop_back)
+        if isinstance(walk, nx.Graph):            
+            root, edge_conn = traverse_dfs(walk, graph, loop_back=loop_back)            
             used_reds = defaultdict(set)
             for a, b, i in edge_conn:
                 red_j1 = graph[a.val][b.val][i]['r_grp_1']
@@ -785,6 +787,7 @@ def verify_walk(r_lookup, graph, walk, loop_back=False):
                     breakpoint()
                 used_reds[a.id] |= set(red_j1)
                 used_reds[b.id] |= set(red_j2)            
+            
             print("pass!")
         elif isinstance(walk, list):
             root, conn = dfs_traverse(walk, loop_back=loop_back)       
@@ -799,7 +802,7 @@ def verify_walk(r_lookup, graph, walk, loop_back=False):
             copies at each step
             """    
             walk = [(str(a.id), str(b.id), a.val.split(':')[0], b.val.split(':')[0]) for (a,b) in conn]
-            chosen_edges, new_mol = walk_enumerate_mols(walk, graph, mols, loop_back=loop_back)
+            chosen_edges, new_mol = walk_enumerate_mols(walk, graph, mols, loop_back=loop_back)            
             assert new_mol is not None
             root.smiles = Chem.MolToSmiles(new_mol)
             if Chem.MolFromSmiles(root.smiles) is None:
@@ -822,16 +825,33 @@ def is_novel(dags, root):
     return True
     
 
-def mol2fp(mol,nBits=2048):
-    # black_inds = [a.GetIdx() for a in mol.GetAtoms() if not a.GetBoolProp('r')]
-    # mol_extract = extract_subgraph(mol, black_inds)[1]
-
-    # Chem.SanitizeMol(mol_extract)
-   
-    # fp = AllChem.GetMorganFingerprintAsBitVect(mol_extract, 2, nBits) 
+def mol2fp(mol,nBits=2048): 
     fp = AllChem.GetMorganFingerprintAsBitVect(mol, 2, nBits)  
     arr = np.zeros((1,))
     DataStructs.ConvertToNumpyArray(fp, arr)
     return arr    
 
 
+def possible_connections(cur, graph, edge_conn, r_lookup):
+    used_reds = defaultdict(set)
+    for a_id, b_id, a_val, b_val, i in edge_conn:
+        red_j1 = graph[a_val][b_val][i]['r_grp_1']
+        red_j2 = graph[a_val][b_val][i]['r_grp_2']
+        assert tuple(red_j1) in set(tuple(x) for x in r_lookup[a_val].values())
+        assert tuple(red_j2) in set(tuple(x) for x in r_lookup[b_val].values())
+        if set(red_j1) & used_reds[a_id]:
+            breakpoint()
+        if set(red_j2) & used_reds[b_id]:
+            breakpoint()
+        used_reds[a_id] |= set(red_j1)
+        used_reds[b_id] |= set(red_j2)            
+    
+    print("pass!")
+    poss = []
+    cur_id, cur_val = cur
+    for dest in graph[cur_val]:   
+        for e in graph[cur_val][dest]:
+            r_grp = graph[cur_val][dest][e]['r_grp_1']
+            if set(r_grp) & set(used_reds[cur_id]):
+                continue
+            poss.append((dest, e))

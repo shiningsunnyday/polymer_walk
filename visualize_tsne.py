@@ -106,7 +106,7 @@ if __name__ == "__main__":
     ax_hmgnn.set_title("HM-GNN")    
     f = open(os.path.join(args.log_dir, 'tsne.txt'),'w+')
     f.write(f"x,y,smiles,property\n")
-    pos_ours, pos_heuristic = [], []
+    pos_ours, pos_heuristic, pos_gin, pos_hmgnn = [], [], [], []
     for i, mask in enumerate(masks):
         for idx, m in enumerate(mask):
             if m:
@@ -116,6 +116,8 @@ if __name__ == "__main__":
                 ax_hmgnn.scatter(X_hmgnn[idx,0], X_hmgnn[idx,1], c=str(norm_scores[idx]), s=20)
                 pos_ours.append((X[idx,0],X[idx,1],data[idx][0],data[idx][1]))
                 pos_heuristic.append((X_heuristic[idx,0],X_heuristic[idx,1],data[idx][0],data[idx][1]))
+                pos_gin.append((X_gnn[idx,0],X_gnn[idx,1],data[idx][0],data[idx][1]))
+                pos_hmgnn.append((X_hmgnn[idx,0],X_hmgnn[idx,1],data[idx][0],data[idx][1]))
     pos_ours = sorted(pos_ours, key=lambda x:x[:2])
     pos_heuristic = sorted(pos_heuristic, key=lambda x:x[:2])
     f.write("=====Ours======\n")
@@ -124,6 +126,12 @@ if __name__ == "__main__":
     f.write("=====Ours (-expert)======\n")
     for p in pos_heuristic:
         f.write(",".join(map(str,p))+'\n')        
+    f.write("=====GIN======\n")
+    for p in pos_gin:
+        f.write(",".join(map(str,p))+'\n')    
+    f.write("=====HM-GNN======\n")
+    for p in pos_hmgnn:
+        f.write(",".join(map(str,p))+'\n')                    
     f.close()
     fig.savefig(os.path.join(args.log_dir, 'tsne.png'))    
     print(os.path.join(args.log_dir, 'tsne.png'))

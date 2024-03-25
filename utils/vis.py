@@ -296,8 +296,9 @@ def vis_transitions_on_graph(args, walk, states, graph):
     fig = plt.Figure(figsize=(100, 100))
     ax = fig.add_subplot()
     pos = nx.circular_layout(graph)
-    pos['G81'], pos['G250'] = pos['G250'], pos['G81']
-    walk_nodes = [w.val for w in walk]
+    # pos['G81'], pos['G250'] = pos['G250'], pos['G81']
+    # walk_nodes = [w.val for w in walk]
+    walk_nodes = [w.val for w in walk[:1]]
     node_size = [100000 if n in walk_nodes else 500 for n in graph]
     nx.draw_networkx_nodes(graph, pos, nodelist=list(graph), node_color='black', node_size=node_size, ax=ax)    
     nx.draw_networkx_labels(graph, pos, ax=ax, font_color='white', font_size=100, labels={n:n if n in walk_nodes else '' for n in graph})
@@ -309,14 +310,17 @@ def vis_transitions_on_graph(args, walk, states, graph):
             weight = states[i][j].item()
             options['width'] = min(500*weight, 100)            
             if list(graph)[j] == walk[i].val:    
-                print(weight)
-                options['edge_color'] = 'black'
-                options['arrowsize'] = 500
-                nx.draw_networkx_edges(graph, pos, edgelist=[(walk[i-1].val,list(graph)[j],0)], **options)
+                # print(weight)
+                # options['edge_color'] = 'black'
+                # options['arrowsize'] = 500
+                # nx.draw_networkx_edges(graph, pos, edgelist=[(walk[i-1].val,list(graph)[j],0)], **options)
+                nx.draw_networkx_edges(graph, pos, edgelist=[(walk[i-1].val,list(graph)[j],0)], **options)  
             elif list(graph)[j] in graph[walk[i-1].val]:
                 nx.draw_networkx_edges(graph, pos, edgelist=[(walk[i-1].val,list(graph)[j],0)], **options)                            
     path = os.path.join(args.vis_folder, f"{time()}.png")
     fig.savefig(path)
+    if len(walk) == 2:
+        breakpoint()
     print(path)
         
 

@@ -146,7 +146,7 @@ if __name__ == "__main__":
                           
 
     if args.out_path:
-        # breakpoint()
+        breakpoint()
         print(f"processed {len(dags)}/{len(lines)} dags")
         pickle.dump(dags, open(args.out_path, 'wb+'))
         # breakpoint()
@@ -158,13 +158,14 @@ if __name__ == "__main__":
     fig = plt.Figure(figsize=(100, 100))
     ax = fig.add_subplot()
     pos = nx.circular_layout(graph)
-    draw_example = False
+    draw_example = True
     if draw_example:
-        walk_nodes = ['G239','G297','G202']
-        node_size = [100000 if n in walk_nodes else 500 for n in graph]
+        walk_nodes = ['G14']
+        label_nodes = ['G14']
+        node_size = [100000 if n in label_nodes else 500 for n in graph]
         nx.draw_networkx_nodes(graph, pos, ax=ax, node_color='black', node_size=node_size)
         nx.draw_networkx_nodes(graph, pos, nodelist=list(graph), node_color='black', node_size=node_size, ax=ax)    
-        nx.draw_networkx_labels(graph, pos, ax=ax, font_color='white', font_size=100, labels={n:n if n in walk_nodes else '' for n in graph})         
+        nx.draw_networkx_labels(graph, pos, ax=ax, font_color='white', font_size=100, labels={n:n if n in label_nodes else '' for n in graph})         
         for edge in tqdm(graph.edges(data=True)):  
             if len(set([edge[0], edge[1]]) & set(walk_nodes)) == 0:
                 continue
