@@ -188,7 +188,6 @@ def compute_metrics(args, mols, old_smiles, new_smiles, retro_suffix='_test'):
     metrics = {}    
     metrics['membership'] = get_membership(args, new_smiles)
     mols = [Chem.MolFromSmiles(smi) for smi in new_smiles]
-    breakpoint()
     metrics['valid'] = sum([mol is not None for mol in mols])/len(mols)     
     if old_smiles is not None:        
         metrics['novelty'] = get_novelty(old_smiles, new_smiles)

@@ -50,8 +50,8 @@ for f in os.listdir(args.logs):
         #     continue
         # if 'ablate_bidir' not in config or not config['ablate_bidir']: # ablate
         #     continue     
-        # if 'ablate_bidir' in config and config['ablate_bidir']: # don't ablate
-        #     continue 
+        if 'ablate_bidir' in config and config['ablate_bidir']: # don't ablate
+            continue 
         
         if os.path.exists(os.path.join(folder, 'metrics.csv')):
             try:

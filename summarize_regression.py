@@ -34,8 +34,8 @@ for f in os.listdir(args.logs):
         #     continue                         
         # if 'edge_weights' not in config or not config['edge_weights']: # edge weights
         #     continue
-        if 'edge_weights' in config and config['edge_weights']: # no edge weights
-            continue
+        # if 'edge_weights' in config and config['edge_weights']: # no edge weights
+        #     continue
         # if 'ablate_bidir' not in config or not config['ablate_bidir']: # ablate
         #     continue     
         if 'ablate_bidir' in config and config['ablate_bidir']: # don't ablate
