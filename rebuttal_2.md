@@ -1,29 +1,17 @@
-*<strong>Summary:</strong>*
+**Thank you for your constructive review and for recognizing our contributions!**
 
-*The paper proposes a novel representation of molecular structures as random walks over a design space. The design space is represented as a multigraph, where the nodes contains the motifs and the possible contexts it can occur. The edges represent a transition rule. The main contribution of the paper is to model the molecules as random walks in this graph, which is formulated as a heat diffusion. It shows that the method outperform state of the art methods for molecular property prediction in 3 tasks. They show that the method provides interpretable representations, and show that it is able to propose novel, synthesizable molecules.*
-
-*<strong>Strengths And Weaknesses:</strong>*
-
-*Strengths*
-
-*The paper proposes a novel framing for designing molecules. The design and construction of the graph is novel, as well as the representation of molecules as a random walk on this graph The paper shows state-of-the-art performance for different problems and in different datasets, both for property prediction and novel molecule generation. It also shows an improvement in running time over other available methods for molecule representation using grammars. The paper also proposes a way to incorporate external expertise and feedback.*
-
-*Obs: section 4.4.1 shows an example on how meaningful the rules extracted are for experts outside of the machine learning field, yet this is outside my area of expertise and I can not provide any feedback or assesement on this topic.*
-
-*Weaknesses* 
-
-*One of the claims of the papers is about interpretability, yet to answer this question they analyse a 2D t-SNE of the embeddings in comparison with pre-trained representations. t-SNEs should not be used for interpretability and are not an indication of this. It is only a tool for visualisation and these are not meaningful by any means. I understand that this is used to identify visual clusters that show meaning, but this is not necesarily generalizable.*
+* *One of the claims of the papers is about interpretability, yet to answer this question they analyse a 2D t-SNE of the embeddings in comparison with pre-trained representations. t-SNEs should not be used for interpretability and are not an indication of this. It is only a tool for visualisation and these are not meaningful by any means. I understand that this is used to identify visual clusters that show meaning, but this is not necesarily generalizable.*
 
 
-The visual clusters in our 2D t-SNE was an unexpected finding that enhanced our own interpretation of what our model is learning. We did not intend to claim it is a universal way to test for interpretability, and apologize that our writing made it appear so. We will write a disclaimer and move this subsection to the Appendix. We will re-emphasize that the interpretability of our method is provided by the fact our design space spans explicit functional motifs that are well-understood by experts, and the learnt parameters tell experts about their importance. This interpretation is done in 4.4.1.
+The visual clusters in our 2D t-SNE was an unexpected finding that enhanced our own interpretation of what our model is learning. We did not intend to claim it is a universal way to test for interpretability, and apologize that our writing made it appear so. We will write a disclaimer and move this subsection to the Appendix. We will re-emphasize that the interpretability of our method arises from the fact our design space spans explicit functional groups that are well-understood by experts, and the learnt parameters capture important design rules which experts can interpret. This analysis is done in 4.4.1, and we can elaborate further if needed.
 
-We also acknolwedge a 2D t-SNE is only a tool for visualization, so we present an alternative way to analyze our model's learnt embeddings:
+We also acknolwedge a 2D t-SNE is only a tool for visualization, so we present a more accepted way of analyzing a model's learnt embeddings.
 
 <a href="https://ibb.co/sJPhHPL"><img src="https://i.ibb.co/h1MkfMp/image.png" alt="image" border="0"></a>
 
 Link: https://ibb.co/sJPhHPL
 
-There are 64 molecules in this test set indexed from lowest to highest HOMO value. The grid visualizes the distance between each pair of molecules as a cosine distance between the final layer embeddings of our model, with darker color representing lower distance (higher similarity). We use 4 quantiles, and refer to their ranges as low, medium-low, medium-high, and high similarity. Since the final layer embedding is used for prediction, we expect molecules with similar properties to have similar embeddings. What is more interesting is to analyze is the agreement between embedding similarity and structural similarity.
+There are 64 molecules in this test set indexed from lowest to highest HOMO value. The above grid visualizes the distance between each pair of molecules as a cosine distance between the final layer embeddings of our model, with darker color representing lower distance (higher similarity). We use 4 quantiles, and refer to their ranges as low, medium-low, medium-high, and high similarity. Since the final layer embedding is used for prediction, we expect molecules with similar properties to have similar embeddings. What is more interesting is to analyze is the agreement between embedding similarity and structural similarity.
 
 Several groups of trends stand out. Particularly, highlighted in green are cases where the embedding similarity is high despite dissimilar HOMO property values; blue marks cases where the embedding similarity is low, and red marks sections that are similar in property, structure, and embedding. We detail each of these, basing comparison against molecule 50 for illustration:
 * For the topmost green section, molecules in the range 1-4 have similar components as those with higher HOMO values, though are much smaller in size and relatively disordered. For instance, molecules 3 and 4 each share key subcomponents (thiophene groups) with molecule 50, despite having quite different overall structure. The embedding similarity between (50, 4) and (50, 3) is thus medium-low and medium-high.
@@ -36,9 +24,7 @@ We hope the above provides more insights into how structural priors in our repre
 
 
 
-*Minor* 
-
-*While I understand that the method combines chemically meaningful groups, showing the Membership metric at least in the appendix would help validate this....*
+* *Minor: While I understand that the method combines chemically meaningful groups, showing the Membership metric at least in the appendix would help validate this....*
 
 Thanks for your suggestion. The Membership metric is indeed a good metric to test whether the method can generate molecules within the same chemical class. However, the Membership criteria isn't straightforward to define for our datasets, due to a greater diversity of characteristic motifs (unlike, say, Isocyanates which has the defining motif O=C=N). After consulting with domain experts, we learned the following:
 

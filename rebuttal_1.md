@@ -1,20 +1,9 @@
-*<strong>Summary:</strong>*
-
-*The authors propose to tackle the case of learning effective molecular graph representations in data scarcity regimes. They do this by expressing string priors on the molecular fragments that are available (e.g. via expert fragmentation). They then represent the molecular graph via a random walk over context sensitive transition (i.e. attachment) rules. They show good empirical comparative results in property prediction and generation tasks w.r.t. SOTA connectionist approaches.*
-
-*<strong>Strengths And Weaknesses:</strong>*
-
-*Pro:*
-* *interesting example of how to integrate domain expert knowledge in the definition of fragments and in the transition rules*
-
-*Con:*
-* *quite dense paper, hard to follow in its details.*
-* *not clear how the end-to-end training is working: more details and clearer explanations are needed*
+**Thank you for your incredibly positive review!**
 
 *<strong>Questions:</strong>*
 * *how does the performance change with the size and complexity of the grammar? i.e. what is the dependency on the number of fragments?*
 
-Thank you for this question! The number of fragments is not a parameter we directly control, so we prefer to think of how the performance depends on the motif collection strategy. In our paper, we tried three strategies:
+Thank you for this question! The number of fragments is not a parameter we directly control, so we prefer to think about how the performance depends on the motif collection strategy. In our paper, we tried three strategies:
 * Fragments from literature (GC)
 * Fragments from expert segmentation (HOPV, PTC)
 * Fragments from heuristic algorithm (GC, HOPV, PTC)

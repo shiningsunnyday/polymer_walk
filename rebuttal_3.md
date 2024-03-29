@@ -1,24 +1,11 @@
-*<strong>Summary:</strong>*
+**Thank you for the comprehensive review and acknowledging the strengths of our work!**
 
-*This paper introduces a molecular representation grammar that utilizes a random walk-based directed graph on motif graphs for molecule representation. This approach allows molecules to be depicted as the graph of random walks over motif graphs, with the added advantage of the grammar being learnable.*
-
-*<strong>Strengths And Weaknesses:</strong>*
-
-*[Strengths]*
-
-* *The paper features extensive experimental validation, covering property prediction, and molecule generation, and includes three ablation studies along with qualitative analysis. These comprehensive experiments effectively demonstrate the method's efficacy.*
-
-Thank you for recognizing our method's efficacy, as demonstrated by comprehensive experiments, ablation studies, and qualitative analysis.
-
-* *The clarity of figures, the inclusion of appropriate examples, and the visualization of results significantly facilitate comprehension of the proposed method.*
-
-Thank you for acknowledging the efforts we made to facilitate clarity and comprehension of our method.
-
-*[Weaknesses]*
 
 * *The superiority of random walks over a simpler undirected graph of motifs is not adequately addressed. Specifically, it is unclear what advantages random walks offer compared to applying Graph Neural Networks (GNNs) directly to motif graphs, like junction-tree graphs [1]. Potential drawbacks such as loops and duplicates arising from random walks warrant further discussion.*
 
-In our experiments, we actually did use $H_M$, the bi-directionally connected (i.e. undirected) graph of motifs as the input to the GNN. We toggled the attribution of edge weights when sweeping our hyperparameters. Thus, the reported experimental results use the better of the two runs (for each seed, for each dataset). We apologize for not making this clear in the main text. Nonetheless, your probing inquiry gets to the center of our representation. We ran an additional ablation study that compares across the four possible combinations between 1) whether to use directed/undirected edges, 2) whether to attribute edge weights. Our findings are summarized in the table below:
+In our experiments, we actually did use $H_M$, the bi-directionally connected (i.e. undirected) graph of motifs as the input to the GNN. We apologize for not making this clear in the main text.
+
+To answer your inquiry, we ran an additional ablation study that compares across the four possible combinations between 1) whether to use directed/undirected edges, 2) whether to attribute edge weights for the task of property prediction. Our findings are summarized in the table below:
 
 |      |                  | $H_M$           | $H_M+w_M$       | $\hat{H_M}-w_M$  | $\hat{H_M}$     |
 |------|------------------|-----------------|-----------------|------------------|-----------------|
@@ -33,23 +20,21 @@ In this table, we use notations consistent with their definitions in the paper. 
 
 We make some observations:
 
-1) Directed graph ($H_M$ --> $\hat{H_M}-w_M$) does not affect performance on GC and PTC but sharply hurts performance on HOPV.
-
-The directed representation does not improve discriminative ability and incurs the cost of poor generalization. On GC, monomers follow the IUPAC convention that reads left-to-right. The "directedness" inductive bias is consistent with the inherent directedness in the data. The same is not true for HOPV and PTC. The performance drop is especially pronounced on HOPV, which has larger molecules hence more nodes in $H_M$.
+1) Directed graph ($H_M$ --> $\hat{H_M}-w_M$) does not affect performance on GC and PTC but hurts performance on HOPV.
 
 2) Adding edge weights ($H_M$ --> $H_M+w_M$) does not affect performance on GC but hurts performance on HOPV and PTC.
 
-Continuous edge weights enhances the representation space but does not lead to stronger generalization. 
-
 3) The standard deviation is higher for the directed representation ($H_M$ --> $\hat{H_M}-w_M$) but not for the weighted representation.
 
-Based on these findings, we conclude the undirected representation is preferred for the best average performance and minimizing variance. 
+The directed representation does not improve discriminative ability and incurs the cost of poor generalization. On GC, monomers follow the IUPAC convention that reads left-to-right. The "directedness" inductive bias is consistent with the inherent directedness in the data. The same is not true for HOPV and PTC. The performance drop is especially pronounced on HOPV, which has larger molecules hence more nodes in $H_M$. Continuous edge weights also enhance the representation space but does not necessarily lead to stronger generalization. 
 
-Regarding why we don't just use [1]'s junction tree representation: As the author remarks himself in his follow-up work [2], his junction tree representation encounters difficulties when decoding larger molecules that require more assembly steps due to the combinatorial complexity of assembling the nodes within each neighborhood. Meanwhile, our representation features a random walk procedure that enables a direct derivation sequence of motifs. We included additional ablation studies below comparing our method against [1, 2] and they demonstrate our efficacy in data-efficient settings.
+Based on these findings, we confirm your intuition that the undirected representation is to be preferred for property prediction tasks. Random walks are more interesting in the context of the design space graph, where the random walk concept allows for sampling molecules in a generation setting.
+
+Regarding the difference of our method with [1]'s junction tree representation: As the author remarks himself in his follow-up work [2], the junction tree representation encounters difficulties when decoding larger molecules that require more assembly steps due to the combinatorial complexity of assembling the nodes. Meanwhile, our representation features a random walk procedure that enables a direct derivation sequence of motifs. We included additional ablation studies below comparing our method against [1, 2] and they demonstrate our efficacy in data-efficient settings.
 
 * *The paper contains ambiguous points within the experimental results. For instance, the performance metrics in Table 4, utilizing a bag of motifs, appear superior to those achieved by the proposed method in Table 1. The explanation provided, attributing this to generalization capabilities, lacks empirical support (e.g., training Mean Absolute Error (MAE) for the proposed method is not shown)....*
 
-We just realized Table 4 has a typo: the metrics for PTC should be Acc and AUC (higher the better). We apologize for any confusion this has caused. For Table 4, we report metrics on the Train set in addition to the Test set, which is where the confusion regarding Bag-of-Motifs appearing superior may have came from. Although Bag-of-Motifs can overfit the data (achieving as low as 0 MAE or 100% accuracy), its test performance is significantly worse across all three datasets. For clarity, Table 4 should have been as follows:
+We just realized that there is a typo in Table 4: the metrics for PTC should be Acc and AUC (the higher the better). We apologize for the confusion this has caused. Further, we report the seemingly good results of Bag-of-Motifs on the Train set for demonstration purposes, to show that it is considerably overfitting. Yet the actually important test performance is significantly worse across all three datasets. For clarity, Table 4 should have been as follows:
 
 | Ablation/Dataset        |          HOPV          |                        |                       |                       | PTC                  |                      |                     |                     | Group Contribution     |                        |                       |                       |
 |-------------------------|:----------------------:|:----------------------:|:---------------------:|:---------------------:|----------------------|----------------------|---------------------|---------------------|------------------------|------------------------|-----------------------|-----------------------|
@@ -66,7 +51,7 @@ We assure you that our method does achieve the reported RS scores. For transpare
 
 We have added two additional metrics: 1) Novelty, the percentage of novel molecules, and 2) Membership, the percentage of molecules that belong to a chemical class. 
 
-The Membership metric is also included after further consultation with experts, who identify the presence of Thiophene as a proxy for Membership to HOPV, and the presence of Chloride/Bromide Halides (a key indicator of toxicity) for PTC. In the case of PTC, the Membership metric is only a sanity check that the method can produce a non-trivial number of *toxic* compounds.
+The Membership metric is included after further consultation with experts, who identify the presence of Thiophene as a proxy for Membership to HOPV, and the presence of Chloride/Bromide Halides (a key indicator of toxicity) for PTC. In the case of both datasets, the Membership metric is only a sanity check that the method can produce a non-trivial number of characteristic compounds (see our response to Reviewer QHNR).
 
 Please see the updated Table 3:
 
@@ -88,7 +73,7 @@ Please see the updated Table 3:
 
 * *Incorporating ablation studies that compare the proposed method with other motif-based approaches, potentially utilizing vocabularies crafted by domain experts, would strengthen the validation of the experimental results.*
 
-We weren't sure whether you meant motif-based *generative* models or motif-based property *prediction*, as the literature for the two tasks are different (most works focus on one or the other, whereas our representation handles both). For completeness, we performed separate ablation studies with respective SOTA motif-based methods.
+We weren't sure whether you meant motif-based *generative* models or motif-based property *prediction*, as the literature for the two tasks are different (most works focus on one or the other, whereas our method handles both). For completeness, we performed separate ablation studies with respective SOTA motif-based methods.
 
 <strong>Comparison with Other Motif-based Generative Models</strong>
 
