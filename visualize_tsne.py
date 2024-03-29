@@ -1,26 +1,19 @@
 import argparse
 import torch
+import torch.nn.functional as F
 from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
+plt.rcParams.update({'font.size': 40, 'font.family': 'serif'})
+from matplotlib.colors import BoundaryNorm
 import numpy as np
+from scipy.spatial.distance import cosine, euclidean
 import os
+import rdkit.Chem as Chem
 
 colors = 'bgrcmykw'
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--log_dir')
-    parser.add_argument('--gnn_feats')
-    parser.add_argument('--heuristic_feats')
-    parser.add_argument('--hmgnn_feats')
-    parser.add_argument('--test_feat_path')
-    parser.add_argument('--data_file')
-    parser.add_argument('--algo', default='tsne', choices=['tsne','pca'])
-    parser.add_argument('--num_quantiles', type=int, default=2)
-    
-    args = parser.parse_args()
-
+def main(args):
     lines = open(args.data_file).readlines()
     test_idx_path = os.path.join(args.log_dir, 'test_idx.txt')
     test_idxes = list(map(int, open(test_idx_path).readlines()))
@@ -57,19 +50,67 @@ if __name__ == "__main__":
     else:
         raise NotImplementedError
 
-    test_feats = torch.load(test_feat_path) 
+    test_feats = torch.load(test_feat_path)     
     if args.algo == 'tsne':
         tsne = TSNE(n_components=2, verbose=1, random_state=0, init='pca')    
         X = tsne.fit_transform(test_feats)   
         X_heuristic = tsne.fit_transform(heuristic_feats)   
         X_gnn = tsne.fit_transform(gnn_feats)      
         X_hmgnn = tsne.fit_transform(hmgnn_feats)      
-    else:
+    elif args.algo == 'pca':
         pca = PCA(n_components=2, random_state=0)
         X = pca.fit_transform(test_feats)
         X_heuristic = pca.fit_transform(heuristic_feats)
         X_gnn = pca.fit_transform(gnn_feats)
         X_hmgnn = pca.fit_transform(hmgnn_feats)
+    else:
+        N = test_feats.shape[0]
+        dists = np.zeros((N, N))        
+        # apply an ordering mask
+        smis = [lines[idx].split(',')[0] for idx in test_idxes]
+        sizes = [float(lines[idx].split(',')[1]) for idx in test_idxes]
+        lines = [lines[idx] for idx in test_idxes]
+        order = np.argsort(sizes)
+        test_feats = test_feats[order]
+        lines = [lines[idx] for idx in order]
+
+        test_feats_norm = F.normalize(test_feats,dim=-1)
+
+        boundaries = np.array([0, 0.001, 0.01, 0.1, 1])  # Adjust these values as needed for your data
+        norm = BoundaryNorm(boundaries, ncolors=256, clip=True)
+        # test_feats_norm = test_feats
+        quantiles = [[] for _ in range(len(boundaries)-1)]
+        for i in range(N):
+            for j in range(N):
+                dists[i, j] = cosine(test_feats_norm[i], test_feats_norm[j])
+                # add to quantile
+                if i <= j:
+                    continue
+                index = np.argmin(dists[i, j] >= boundaries)
+                quantiles[index-1].append((i, j, lines[i], lines[j]))
+        path = os.path.join(args.log_dir, 'dists.txt')
+        f = open(path, 'w+')
+        for i, quant in enumerate(quantiles):
+            f.write(f"QUANTILE {i+1}: {boundaries[i]}-{boundaries[i+1]}\n")
+            for idx1, idx2, smi1, smi2 in quant:
+                smi1 = ' '.join(smi1.rstrip('\n').split(','))
+                smi2 = ' '.join(smi2.rstrip('\n').split(','))
+                f.write(f"{smi1} ({idx1})\n{smi2} ({idx2})\n\n")        
+
+
+        fig = plt.Figure(figsize=(20,20))
+        ax = fig.add_subplot(1,1,1)
+        im = ax.imshow(dists, cmap='gray', norm=norm, interpolation='nearest')
+        fig.colorbar(im, shrink=0.8)
+        ax.set_title("Pairwise Cosine Distance on HOPV Test Set", fontsize=40, fontname='serif')
+        ticks = range(0, N, 5)
+        labels = [f"{tick}" if tick % 10 == 0 else '' for tick in ticks]
+        ax.set_xticks(ticks=ticks, labels=labels, fontsize=30)
+        ax.set_yticks(ticks=ticks, labels=labels, fontsize=30)
+        path = os.path.join(args.log_dir, 'dists.png')
+        fig.savefig(path)     
+        return   
+
 
     data = []
     masks = [[] for _ in range(args.num_quantiles)]
@@ -134,4 +175,19 @@ if __name__ == "__main__":
         f.write(",".join(map(str,p))+'\n')                    
     f.close()
     fig.savefig(os.path.join(args.log_dir, 'tsne.png'))    
-    print(os.path.join(args.log_dir, 'tsne.png'))
+    print(os.path.join(args.log_dir, 'tsne.png'))    
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--log_dir')
+    parser.add_argument('--gnn_feats')
+    parser.add_argument('--heuristic_feats')
+    parser.add_argument('--hmgnn_feats')
+    parser.add_argument('--test_feat_path')
+    parser.add_argument('--data_file')
+    parser.add_argument('--algo', default='tsne', choices=['tsne','pca','dist'])
+    parser.add_argument('--num_quantiles', type=int, default=2)
+    
+    args = parser.parse_args()
+
+    main(args)

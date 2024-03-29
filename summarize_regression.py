@@ -28,8 +28,8 @@ for f in os.listdir(args.logs):
                     continue
         else:
             continue
-        if 'train_size' not in config or config['train_size'] != 1.0:
-            continue
+        # if 'train_size' not in config or config['train_size'] != 1.0:
+        #     continue
         # if 'feat_concat_W' not in config or not config['feat_concat_W']:
         #     continue                         
         # if 'edge_weights' not in config or not config['edge_weights']: # edge weights
