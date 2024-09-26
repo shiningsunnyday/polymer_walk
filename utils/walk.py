@@ -2,7 +2,14 @@ from collections import OrderedDict, defaultdict
 from copy import deepcopy
 import numpy as np
 from rdkit import Chem
+from rdkit.Chem import rdDepictor
+rdDepictor.SetPreferCoordGen(True)
+# rdDepictor.Compute2DCoords(new_mol)
+# Chem.Draw.MolToImageFile(new_mol, '/home/msun415/new_mol.jpg',size=(2000,2000))
 import os
+from tqdm import tqdm
+
+PRIORITY_RELATION = [('O', 'C')]
 
 
 def name_group(m):
@@ -15,6 +22,24 @@ def name_group(m):
         return prefix(m)+f"{m if m<=41 else m-41 if m<=73 else m-73}"
     else:
         return f"G{m}" # not group contrib
+    
+
+def vis_mol(mol, path):
+    mol = deepcopy(mol)
+    for i, a in enumerate(mol.GetAtoms()): 
+        a.SetAtomMapNum(i)
+        try:
+            r = a.GetBoolProp('r')
+        except:
+            continue
+        if r:
+            a.SetProp('atomLabel', f"R_{a.GetSymbol()}{i+1}")
+        else:
+            a.SetProp('atomLabel', f"{a.GetSymbol()}:{i+1}")
+    rdDepictor.Compute2DCoords(mol)
+    Chem.Draw.MolToImageFile(mol, path, size=(2000,2000))
+    return mol
+
 
 
 def join_mols(mol, other, r1, r2, folder=None):
@@ -27,22 +52,39 @@ def join_mols(mol, other, r1, r2, folder=None):
         for n in r.GetNeighbors():
             if n.GetIdx() in r1: continue
             cur_bond = new_mol.GetBondBetweenAtoms(r_ind, n.GetIdx())            
+            # use priority to determine if any atom symbol in r1 should be carried over
+            sym_a = ed_new.GetMol().GetAtomWithIdx(r_ind).GetSymbol()
+            no_a = ed_new.GetMol().GetAtomWithIdx(r_ind).GetAtomicNum()
+            sym_b = ed_new.GetMol().GetAtomWithIdx(r2[i]+sep).GetSymbol() 
             ed_new.RemoveBond(r_ind, n.GetIdx())
-            ed_new.AddBond(n.GetIdx(), r2[i]+sep, order=cur_bond.GetBondType())            
+            ed_new.AddBond(n.GetIdx(), r2[i]+sep, order=cur_bond.GetBondType())                        
             new_mol = ed_new.GetMol()
+            if (sym_a, sym_b) in PRIORITY_RELATION:                         
+                new_mol.GetAtomWithIdx(r2[i]+sep).SetAtomicNum(no_a)            
+            ed_new = Chem.EditableMol(new_mol)
             # print(f"removed {(r_ind, n.GetIdx())}")
             # print(f"added {(n.GetIdx(), r2[i]+sep)}")            
             if folder: 
                 pass
-                # print(create_stl(new_mol, folder))
+                # print(create_stl(new_mol, folder))    
+
     # delete mol's r1
     for r in sorted(r1, key=lambda x:-x):
         ed_new.RemoveAtom(r)
-        # print(f"removed {r}")
         if folder:     
             pass        
-            # print(create_stl(new_mol, folder))        
-    return ed_new.GetMol()
+            # print(create_stl(new_mol, folder))
+        
+    # no explicit Hs allowed
+    mol = ed_new.GetMol()
+    for atom in mol.GetAtoms():
+        atom.SetNumExplicitHs(0)
+    try:
+        Chem.SanitizeMol(mol)
+    except:
+        # pass
+        raise ValueError("cannot sanitize")
+    return mol
 
 
 def walk_to_mol(walk, mols, folder=None):
@@ -92,6 +134,7 @@ def walk_to_mol(walk, mols, folder=None):
             b_node_inds = r_info['k2']
             # stl_path = create_stl(mol, folder=folder)[0]
             # print(f"{stl_path} starting molecule")
+
             mol = join_mols(mol, mol_b, a_node_inds, b_node_inds, folder=folder)
             # stl_path = create_stl(mol, folder=folder)[0]
             # print(f"joined {b_name} to {a_name} in {stl_path}")
@@ -118,7 +161,14 @@ def extract_idxes(mol):
             # for each original group and its atom index
             dic[p.split('-')[0], int(p.split('-')[1])] = i
     return dic
+
+
+
 def exact_match(mol1, mol2):
+    if mol1.GetNumAtoms() != mol2.GetNumAtoms():
+        return False
+    if mol1.GetNumBonds() != mol2.GetNumBonds():
+        return False    
     mol1 = deepcopy(mol1)
     mol2 = deepcopy(mol2)
     for a in mol1.GetAtoms():
@@ -126,6 +176,19 @@ def exact_match(mol1, mol2):
     for a in mol2.GetAtoms():
         a.SetAtomMapNum(0)            
     return Chem.MolToSmiles(mol1) == Chem.MolToSmiles(mol2)
+
+
+
+def priority(mol_a, mol_b, a_inds, b_inds):
+    # Check if there is an idx in a where its atomic symbol has higher precedence
+    assert len(a_inds) == len(b_inds)
+    for a, b in zip(a_inds, b_inds):
+        a_sym = mol_a.GetAtomWithIdx(a).GetSymbol()
+        b_sym = mol_b.GetAtomWithIdx(b).GetSymbol()
+        if (a_sym, b_sym) in PRIORITY_RELATION:
+            return True
+    return False
+
 
 
 
@@ -166,13 +229,44 @@ def walk_along_edge(mols,
     # stl_path = create_stl(mol, folder=folder)[0]
     # print(f"{stl_path} starting molecule")
     enum_mol = deepcopy(mol)
+
+    """
+    The following function replaces a_node_inds in mol with b_node_inds in mol_b.
+    In some cases, we want the opposite to be true. One way to disambiguate is to
+    specify the priority assignment (a or b) in the syntax, but that makes notation
+    too cumbersome. Instead, I use some heuristics, using the priority of atomic
+    symbols (e.g. O > C). Specifically, I compare r_grp_1 and b2. If r_grp_1's atoms have
+    higher priority b2, the joining is reversed, then the indices corrected.
+    """
+
+    # if priority(enum_mol, mol_b, [idxes[(a, at)] for at in r_info['r_grp_1']], r_info['b2']) \
+    #     or priority(enum_mol, mol_b, [idxes[(a, at)] for at in r_info['b1']], r_info['r_grp_2']):
+    #     ct_b = mol_b.GetNumAtoms()      
+    #     ct_e = enum_mol.GetNumAtoms()     
+    #     vis_mol(mol_b, '/home/msun415/mol_b.jpg')      
+    #     vis_mol(enum_mol, '/home/msun415/enum_mol.jpg')      
+    #     new_mol = join_mols(mol_b, enum_mol, b_node_inds, a_node_inds, folder=folder)                       
+    #     old_mol = join_mols(enum_mol, mol_b, a_node_inds, b_node_inds, folder=folder)
+    #     vis_mol(old_mol, '/home/msun415/old_mol.jpg')     
+    #     inds = list(range(ct_e-len(a_node_inds), new_mol.GetNumAtoms()))+list(range(ct_e-len(a_node_inds)))           
+    #     vis_mol(new_mol, '/home/msun415/new_mol.jpg')
+    #     new_mol = Chem.RenumberAtoms(new_mol, inds)       
+    #     vis_mol(new_mol, '/home/msun415/new_mol_renumbered.jpg')
+    #     breakpoint()        
+        
+    # else:    
     new_mol = join_mols(enum_mol, mol_b, a_node_inds, b_node_inds, folder=folder)
+    if Chem.MolFromSmiles(Chem.MolToSmiles(new_mol)) is None:
+        # pass
+        breakpoint()
 
     # prune all the dups      
     exist = False
+    # for new_mol_prev in tqdm(new_mols, "prune all dups"):
     for new_mol_prev in new_mols:
         if exact_match(new_mol_prev, new_mol):
             exist = True
+
     if exist:
         return
 
@@ -196,12 +290,11 @@ def walk_along_edge(mols,
 
 
 
-def walk_enumerate_mols(walk, graph, mols, folder=None, loop_back=False):
+def walk_enumerate_mols(walk, graph, mols, folder=None, loop_back=False, return_all=False):
     name_lookup = {name_group(i): i for i in range(1, len(mols)+1)}
     # run some tests to make sure walk is the right format
-    # last two edges of walk needs to be the same as first two
-    if loop_back:
-        assert walk[:2] == walk[-2:]
+    # make sure no dup edges    
+    walk = list({(edge[0], edge[1]): edge for edge in walk}.values())
     idxes = {} # identify where atom is in the composed mol
     edges = defaultdict(list)   
     idx_mol = {}
@@ -234,35 +327,48 @@ def walk_enumerate_mols(walk, graph, mols, folder=None, loop_back=False):
         a = bfs[0]
         bfs.pop(0)                        
         for k in edges[a]:
-            b, a_name, b_name = k                   
+            b, a_name, b_name, *pargs = k
             if vis[b]:
                 continue
             new_mols = []
             new_idxes = []     
             new_chosen_edges = []                  
             for idxes, mol, chosen_edge in zip(idxes, enum_mols, chosen_edges):
-                for e in graph[idx_val[a]][idx_val[b]]:
-                    walk_along_edge(mols, 
-                                    graph, 
-                                    conn_index, 
-                                    idx_val, 
-                                    idx_mol, 
-                                    idxes, 
-                                    mol, 
-                                    chosen_edge, 
-                                    new_mols, 
-                                    new_chosen_edges, 
-                                    new_idxes, 
-                                    a, 
-                                    b, 
-                                    e, 
-                                    folder)                    
+                if len(pargs) == 1:
+                    poss_edges = pargs
+                elif len(pargs) == 0:
+                    poss_edges = graph[idx_val[a]][idx_val[b]]
+                else:
+                    raise NotImplementedError
+                bad = True
+                for e in poss_edges:
+                    try:
+                        walk_along_edge(mols, 
+                                        graph, 
+                                        conn_index, 
+                                        idx_val, 
+                                        idx_mol, 
+                                        idxes, 
+                                        mol, 
+                                        chosen_edge, 
+                                        new_mols, 
+                                        new_chosen_edges, 
+                                        new_idxes, 
+                                        a, 
+                                        b, 
+                                        e, 
+                                        folder)
+                        bad = False
+                    except ValueError as e:
+                        continue
+                if bad: # cannot walk
+                    raise ValueError("cannot sanitize mol")
                 vis[b] = True
             bfs.append(b)  
             if new_mols:         
                 enum_mols, idxes, chosen_edges = new_mols, new_idxes, new_chosen_edges
             else:
-                raise      
+                raise KeyError("cannot walk along edge")
     if loop_back:
         # loop back
         a, b = walk[-1][:2]
@@ -289,8 +395,14 @@ def walk_enumerate_mols(walk, graph, mols, folder=None, loop_back=False):
                                 a, 
                                 b, 
                                 i, 
-                                folder)  
-        # [Chem.MolFromSmiles(Chem.MolToSmiles(new_mol)) for new_mol in new_mols]
-        return new_chosen_edges[0], new_mols[0]
+                                folder)
+        chosen_edges = new_chosen_edges    
+    if return_all:
+        return chosen_edges, new_mols
     else:
-        return chosen_edges[0], new_mols[0]
+        ind = 0
+        for i in range(len(new_mols)-1,-1,-1):
+            new_mol = new_mols[i]
+            if Chem.MolFromSmiles(Chem.MolToSmiles(new_mol)) is not None:
+                ind = i        
+        return chosen_edges[ind], new_mols[ind]

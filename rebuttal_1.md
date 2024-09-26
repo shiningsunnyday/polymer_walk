@@ -1,6 +1,6 @@
 **Thank you for your incredibly positive review!**
 
-*<strong>Questions:</strong>*
+**Questions**
 * *how does the performance change with the size and complexity of the grammar? i.e. what is the dependency on the number of fragments?*
 
 Thank you for this question! The number of fragments is not a parameter we directly control, so we prefer to think about how the performance depends on the motif collection strategy. In our paper, we tried three strategies:
@@ -14,7 +14,7 @@ Thank you for this question! The number of fragments is not a parameter we direc
 | Expert                            | (329, 37273) | (407, 23145) | N/A        |
 | Heuristic                         | (208, 16880) | (279, 37968) | (90, 4095) |
 
-In the above table, we show the number of fragments and number of edges in the grammar created from our implemented strategies. We notice that strategies 1 and 2 create more fragments, but not necessarily more edges (transition rules). This is due to the expert-defined context usually being more specific, so despite a higher number of fragments, fewer pairs of fragments may get matched.
+In the above table, we show the number of fragments and number of edges in the grammar from respective strategies. We notice that strategies 1 and 2 create more fragments, but not necessarily more edges (transition rules). This is due to the expert-defined context usually being more specific, so despite a higher number of fragments, fewer pairs of fragments may get matched.
 
 | Ablation/Dataset        |          HOPV          |                        |                       |                       | PTC                  |                      |                     |                     | Group Contribution     |                        |                       |                       |
 |-------------------------|:----------------------:|:----------------------:|:---------------------:|:---------------------:|----------------------|----------------------|---------------------|---------------------|------------------------|------------------------|-----------------------|-----------------------|
@@ -37,16 +37,16 @@ The second notion actually describes the memory mechanism of our (non-Markovian)
 
 * *How does the performance change with the size of possible contexts or size of contexts?*
 
-This is a very interesting question! Our ablation study (-expert) reveals some preliminary insight into this matter. In our heuristic segmentation strategy, the size of each context is always a single atom. This is because when ablating the expert, a heuristic strategy cannot infer whether a motif should require a context of a single atom, bond, ring, or larger substructure. Meanwhile, the expert provides us dataset-specific rules for automatically determining the context (see Appendix A). The expert can also inform us of exceptions to the rule. When implementing our workflows, we found this to be a good tradeoff between keeping the workflow automated and the grammar's expressivity by allowing a few different types of contexts. Thus, we especially instructed our experts to keep the context to single/double atoms and rings, even in cases where they feel strongly a larger context must be present to attach the functional group. We acknowledge that this somewhat limits the degree to which we integrate domain expert knowledge, but this may be desirable from a computational perspective the motif graph is dense (lots of matches) rather than sparse (on which learning may prove more difficult). 
+This is a very interesting question! Our ablation study (-expert) reveals some preliminary insight into this matter. In our heuristic segmentation strategy, the size of each context is always a single atom. This is because when ablating the expert, a heuristic strategy cannot infer whether a motif should require a context of a single atom, bond, ring, or larger substructure. Meanwhile, the expert provides us dataset-specific rules for automatically determining the context (see Appendix A) and inform us of exceptions to the rule, if any. When implementing our workflows, we found this to be a good tradeoff between keeping the workflow semi-automated and allowing a few different types of contexts. Thus, we especially instructed our experts to keep the context to single/double atoms and rings, even in cases where they feel strongly a larger context must be present to attach the functional group. We acknowledge that this somewhat limits the degree to which we integrate domain expert knowledge, but this may be desirable from a computational perspective the motif graph is dense (lots of matches) rather than sparse (on which learning may prove more difficult). 
 
 Incorporating larger contexts identified by the expert is definitely worth investigating into. One idea we have for future research is to use *Matryoshka* contexts, where each motif allows a hierarchy of attachment contexts. This makes our production rule set hierarchical and can encode stronger priors from domain experts. We are also looking at problems in domain areas beyond chemistry where such hierarichial priors are desirable.
 
 Should there be further suggestions, please let us know!
 
 
-[1] Rosvall, M., Esquivel, A., Lancichinetti, A. et al. Memory in network flows and its effects on spreading dynamics and community detection. Nat Commun 5, 4630 (2014). https://doi.org/10.1038/ncomms5630
+[1] Rosvall, M., Esquivel, A., Lancichinetti, A. et al. Memory in network flows and its effects on spreading dynamics and community detection. Nat Commun 5, 4630 (2014).
 
-[2] Masuda, Naoki, et al. ‘Random Walks and Diffusion on Networks’. Physics Reports, vol. 716–717, 2017, pp. 1–58, https://doi.org10.1016/j.physrep.2017.07.007.
+[2] Masuda, Naoki, et al. ‘Random Walks and Diffusion on Networks’. Physics Reports, vol. 716–717, 2017, pp. 1–58.
 
 [3] Fang, Guanhua, Gennady Samorodnitsky, and Zhiqiang Xu. "A Cover Time Study of a non-Markovian Algorithm." arXiv preprint arXiv:2306.04902 (2023).
 

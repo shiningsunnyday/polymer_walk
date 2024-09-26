@@ -76,7 +76,7 @@ def main(args):
 
         test_feats_norm = F.normalize(test_feats,dim=-1)
 
-        boundaries = np.array([0, 0.001, 0.01, 0.1, 1])  # Adjust these values as needed for your data
+        boundaries = np.array([0, 0.001, 0.01, 0.1, 2])  # Adjust these values as needed for your data
         norm = BoundaryNorm(boundaries, ncolors=256, clip=True)
         # test_feats_norm = test_feats
         quantiles = [[] for _ in range(len(boundaries)-1)]

@@ -16,10 +16,11 @@ import time
 import json
 from copy import deepcopy
 from math import factorial
-from torch_geometric.nn.conv import GATConv, GCNConv, TransformerConv, GPSConv
+from torch_geometric.nn.conv import GATConv, GCNConv, TransformerConv, GPSConv, GINConv
 from models.gnn_conv import MyGINConv as GINConv
 from torch_geometric.nn import aggr
 from multiprocessing import Pool
+from queue import PriorityQueue
 
 
 class DiffusionProcess:
@@ -484,7 +485,7 @@ class Predictor(nn.Module):
                     else: 
                         mlp = nn.Sequential(lin_i_1, act, lin_i_2)
                     layer_name = f"gnn_{i}" if share_params else f"gnn_{i}_{j}"
-                    setattr(self, layer_name, GINConv(mlp, edge_dim=1))               
+                    setattr(self, layer_name, GINConv(mlp, edge_dim=1))
         elif gnn in ['gat', 'gcn']:
             layer_name = {'gat': GATConv, 'gcn': GCNConv}
             if share_params:
@@ -538,7 +539,7 @@ class Predictor(nn.Module):
     def forward(self, X, edge_index, edge_weights, return_feats=False):  
         # node_mask = torch.zeros((X.shape[0],))==1
         # # node_mask = torch.ones((X.shape[0], 1))
-        # node_mask[edge_index.flatten()] = True
+        # node_mask[edge_index.flatten()] = True        
         if self.gnn == 'gin':
             head_outs = []
             for j in range(1, self.num_heads+1):
@@ -548,7 +549,7 @@ class Predictor(nn.Module):
                 if self.in_mlp:
                     X_out = getattr(self, "in_mlp" if self.share_params else f"in_mlp_{j}")(X_out)
                 for i in range(1, self.num_layers+1):
-                    layer_name = f"gnn_{i}" if self.share_params else f"gnn_{i}_{j}"
+                    layer_name = f"gnn_{i}" if self.share_params else f"gnn_{i}_{j}"                    
                     X_out = getattr(self, layer_name)(X_out, edge_index, edge_weight=(edge_weights if self.edge_weights else None))
                 head_outs.append(X_out)
             if self.share_params:
@@ -622,9 +623,11 @@ class Predictor(nn.Module):
             return out
     
 
-def state_to_probs(state, adj=None, softmax=False):
+def state_to_probs(state, adj=None, softmax=False, uniform=False, softmax_temp=1.0):
     if softmax:
-        state = F.softmax(state, dim=-1)
+        state = F.softmax(state * softmax_temp, dim=-1)
+    elif uniform:
+        state = torch.where(state>=0., 1.0, 0.0)
     else:
         state = torch.where(state>=0., state, 0.0)
     if adj is not None:
@@ -727,7 +730,7 @@ def featurize_walk(args, graph, model, dag, proc, mol_feats, feat_lookup={}, vis
         assert edge_index.shape[1] == 0
         edge_index = torch.tensor([[0], [0]], dtype=torch.int64) # trivial self-connection for gnn
         edge_attr = torch.tensor([[1.]])
-    if hasattr(dag, 'smiles'):
+    if hasattr(dag, 'smiles') and args.concat_mol_feats:        
         dag_mol = Chem.MolFromSmiles(dag.smiles)
         if dag_mol is None: # try smarts
             dag_mol = Chem.MolFromSmarts(dag.smiles)        
@@ -1088,28 +1091,87 @@ def get_state(G, start, after, traj, loop_back):
     return state
 
 
-def extract_rule(n, G, graph, model, all_nodes, loop_back=True, max_thresh=0.95, min_thresh=0.1, depth=2):
-    N = len(G)     
-    context = torch.zeros((1, N), dtype=torch.float64)
-    start = graph.index_lookup[n]
-    state = torch.zeros((1, len(G)), dtype=torch.float64)
-    state[0, graph.index_lookup[n]] = 1.
-    traj = [str(start)]
-    cur_node_ind = start    
-    t = 0
-    after = -1
-    good = False   
-    explore = [(traj, state, context, t, {})]
+
+class PriorityQueue(object):
+    def __init__(self):
+        self.queue = []
+ 
+    def __str__(self):
+        return ' '.join([str(i) for i in self.queue])
+ 
+    # for checking if the queue is empty
+    def isEmpty(self):
+        return len(self.queue) == 0
+ 
+    # for inserting an element in the queue
+    def insert(self, data):
+        self.queue.append(data)
+
+    @staticmethod
+    def priority(tup): # sum(log(prob))
+        dic = tup[-1]
+        if dic:
+            log_prob = 0.0
+            for prob in dic.values():
+                log_prob += np.log(prob)
+            return log_prob
+        else:
+            return 0.0
+ 
+    # for popping an element based on Priority
+    def delete(self):
+        try:
+            max_val = 0
+            pr = 0
+            for i in range(len(self.queue)):
+                if PriorityQueue.priority(self.queue[i]) > PriorityQueue.priority(self.queue[max_val]):
+                    max_val = i
+                    pr = PriorityQueue.priority(self.queue[i])
+            item = self.queue[max_val]
+            del self.queue[max_val]
+            print(f"returning item with priority {pr}")
+            return item
+        except IndexError:
+            print()
+            exit()
+
+
+def extract_rule(n, G, graph, model, all_nodes, loop_back=True, max_thresh=0.95, min_thresh=0.1, depth=2, r_lookup=None, num_generate=float("inf")):
+    def initialize(n):
+        N = len(G)     
+        context = torch.zeros((1, N), dtype=torch.float64)
+        start = graph.index_lookup[n]
+        state = torch.zeros((1, len(G)), dtype=torch.float64)
+        state[0, graph.index_lookup[n]] = 1.
+        traj = [str(start)]
+        t = 0         
+        return (traj, state, context, t, {}) 
+    if depth == -1:
+        explore = PriorityQueue()
+        if isinstance(n, list):
+            for init_n in n:
+                explore.insert(initialize(init_n))
+        else:
+            explore.insert(initialize(n))
+    else:
+        explore.append(initialize(n))
     trajs = []
-    while explore:      
-        # print(f"input state {get_repr(state)}, context {get_repr(context)}, t {t}")  
-        traj, state, context, t, probs = explore.pop(-1)    
+    while not explore.isEmpty():
+        if len(trajs) == num_generate:
+            break
+        # print(f"input state {get_repr(state)}, context {get_repr(context)}, t {t}")
+        print(f"{len(explore.queue)} in the priority queue, {len(trajs)} done")
+        if depth == -1:
+            traj, state, context, t, probs = explore.delete()
+        else:
+            traj, state, context, t, probs = explore.pop(-1)       
+        start = int(traj[0].split('[')[0])
         cur_node_ind = state[0].argmax().item()
         update, context = model(state, context, t)
         t += 1
         if not (state>=0).all():
-            breakpoint()                         
-        state = state_to_probs(state+update, graph.adj[cur_node_ind])        
+            breakpoint()
+        state = state_to_probs(state+update, graph.adj[cur_node_ind])
         state_numpy = state.detach().flatten().numpy()
         for i in range(len(G)):
             if len(traj) and extract(traj[-1]) == i: # can't loop back to itself if nothing else in between
@@ -1118,36 +1180,58 @@ def extract_rule(n, G, graph, model, all_nodes, loop_back=True, max_thresh=0.95,
                 state_numpy[i] = 0.                                                   
         state_numpy = state_numpy/state_numpy.sum()        
         if not (state_numpy == state_numpy).all():
-            continue         
-        if depth-1 == t:
-            if state_numpy.max() < max_thresh:
-                break
-            else:
-                ind = state_numpy.argmax()
-                traj = deepcopy(traj)
-                if start == 303 and ind == 0:
-                    breakpoint()
-                traj_copy = deepcopy(traj)
-                probs_copy = deepcopy(probs)
-                _ = get_state(G, start, ind, traj, loop_back=loop_back)                
-                if traj_copy == traj:
+            continue
+        if depth == -1:
+            inds = state_numpy.nonzero()[0]            
+            for ind in inds:
+                ind_traj = deepcopy(traj)  
+                state = get_state(G, start, ind, ind_traj, loop_back=True) # group contrib
+                if traj == ind_traj: # means violation
+                    continue                
+                # try to verify                    
+                named_ind_traj = process_good_traj(ind_traj, all_nodes)
+                done = (str(start) == ind_traj[-1])                
+                try:
+                    root, conn = verify_walk(r_lookup, G, named_ind_traj, loop_back=done)
+                except Exception as e:                        
                     continue
-                prob = state_numpy.max()
-                print(f"found depth={depth} rule {traj} with prob={prob}")
-                probs_copy[f"{all_nodes[cur_node_ind]}-{all_nodes[ind]}"] = prob
-                trajs.append((traj_copy, traj, probs_copy))
+                ind_probs = deepcopy(probs)
+                ind_probs[f"{all_nodes[cur_node_ind]}-{all_nodes[ind]}"] = state_numpy[ind]                                   
+                if state is None:
+                    if not done:
+                        breakpoint()
+                    trajs.append((ind_traj, root, ind_probs))                    
+                else:                                                                                         
+                    explore.insert((ind_traj, state, context.clone(), t, ind_probs))
         else:
-            inds = np.arange(len(state_numpy))
-            for ind in inds[state_numpy >= min_thresh]:
-                ind_traj = deepcopy(traj)
-                state = get_state(G, start, ind, ind_traj, loop_back=loop_back)
-                if traj == ind_traj:
-                    continue
-                if state is not None:
-                    ind_probs = deepcopy(probs)
-                    ind_probs[f"{all_nodes[cur_node_ind]}-{all_nodes[ind]}"] = state_numpy[ind]
-                    explore.append((ind_traj, state, context.clone(), t, ind_probs))
-            
+            if depth-1 == t:
+                if state_numpy.max() < max_thresh:
+                    break
+                else:
+                    ind = state_numpy.argmax()
+                    traj = deepcopy(traj)
+                    if start == 303 and ind == 0:
+                        breakpoint()
+                    traj_copy = deepcopy(traj)
+                    probs_copy = deepcopy(probs)
+                    _ = get_state(G, start, ind, traj, loop_back=loop_back)                
+                    if traj_copy == traj:
+                        continue
+                    prob = state_numpy.max()
+                    print(f"found depth={depth} rule {traj} with prob={prob}")
+                    probs_copy[f"{all_nodes[cur_node_ind]}-{all_nodes[ind]}"] = prob
+                    trajs.append((traj_copy, traj, probs_copy))
+            else:
+                inds = np.arange(len(state_numpy))
+                for ind in inds[state_numpy >= min_thresh]:
+                    ind_traj = deepcopy(traj)
+                    state = get_state(G, start, ind, ind_traj, loop_back=loop_back)
+                    if traj == ind_traj:
+                        continue
+                    if state is not None:
+                        ind_probs = deepcopy(probs)
+                        ind_probs[f"{all_nodes[cur_node_ind]}-{all_nodes[ind]}"] = state_numpy[ind]
+                        explore.append((ind_traj, state, context.clone(), t, ind_probs))        
     return trajs
 
 
@@ -1191,12 +1275,27 @@ def W_to_attr(args, W_adj, mol_feats):
     return node_attr, edge_index, edge_attr
 
 
-def sample_walks(args, G, graph, seen_dags, model, all_nodes, r_lookup, diffusion_args, predict_args={}):
+
+def sample_walks(args, 
+                 G, 
+                 graph, 
+                 seen_dags, 
+                 model, 
+                 all_nodes, 
+                 r_lookup, 
+                 diffusion_args, 
+                 predict_args={}, 
+                 return_metrics=False, 
+                 **kwargs):
     new_dags = []
     trajs = []
     novel = []     
- 
+
+    num_sampled = 0
     num_tried, num_valid = 0, 0
+    walk_invalid = 0
+    chemical_invalid = 0
+    chemical_invalid_smiles = 0
     new_novel = 0
     index = 0
 
@@ -1234,12 +1333,18 @@ def sample_walks(args, G, graph, seen_dags, model, all_nodes, r_lookup, diffusio
                 g.add_edge(src, dest, r_grp_1=e_src['r_grp_1'], b1=e_src['b1'], r_grp_2=e_src['r_grp_2'], b2=e_src['b2'])
                 g.add_edge(dest, src, r_grp_1=e_dest['r_grp_1'], b1=e_dest['b1'], r_grp_2=e_dest['r_grp_2'], b2=e_dest['b2'])
             breakpoint()
-
+    
     test_walks = hasattr(args, 'test_walks_file') and args.test_walks_file
     if test_walks:
-        eval_trajs = [l.rstrip('\n').split(' ') for l in open(args.test_walks_file).readlines()]
+        if '.txt' in args.test_walks_file:
+            eval_trajs = [l.rstrip('\n').split(' ') for l in open(args.test_walks_file).readlines()]
+        elif '.pkl' in args.test_walks_file:
+            all_walks = pickle.load(open(args.test_walks_file, 'rb'))
+            eval_trajs = [walk[0] for walk in all_walks]
+        else:
+            raise NotImplementedError
+        setattr(args, 'num_generate_samples', len(eval_trajs))
         test_index = 0
-
     while new_novel < args.num_generate_samples:                    
         n = list(G.nodes())[index%len(G)]
         index += 1
@@ -1248,7 +1353,6 @@ def sample_walks(args, G, graph, seen_dags, model, all_nodes, r_lookup, diffusio
         if test_walks:
             if test_index < len(eval_trajs):
                 traj = eval_trajs[test_index]
-                breakpoint()
                 try:
                     name_traj = process_good_traj(traj, all_nodes)                        
                     print(f"eval traj {name_traj}")
@@ -1259,24 +1363,40 @@ def sample_walks(args, G, graph, seen_dags, model, all_nodes, r_lookup, diffusio
                 test_index += 1
             else:
                 break
-        else:            
-            traj, good = sample_walk(n, G, graph, model, all_nodes, loop_back='group-contrib' in os.environ['dataset'], min_thresh=args.min_thresh, softmax=args.softmax)                   
-            print(traj)
+        else:      
+            num_sampled += 1
+            traj, good = sample_walk(n, G, graph, model, all_nodes, 
+                                     loop_back='group-contrib' in os.environ['dataset'], 
+                                     min_thresh=args.min_thresh, 
+                                     softmax=args.softmax)                   
+            # print(traj)
         if len(traj) > 1 and good:
             num_tried += 1
-            name_traj = process_good_traj(traj, all_nodes)                        
-            assert len(traj) == len(name_traj)                    
+            name_traj = process_good_traj(traj, all_nodes)
+            assert len(traj) == len(name_traj)
             try: # test for validity
-                root, edge_conn = verify_walk(r_lookup, G, name_traj, loop_back='group-contrib' in os.environ['dataset'])
-            except Exception as e:
-                if isinstance(e, KeyError):
-                    print(e)
+                root, edge_conn = verify_walk(r_lookup, 
+                                              G, 
+                                              name_traj, 
+                                              **kwargs)
+            except Exception as e:                
+                breakpoint()
+                if isinstance(e, KeyError): # invalid walk
+                    # print(e)
+                    walk_invalid += 1
                     continue
-                if isinstance(e, ValueError):
-                    print(e)
+                if isinstance(e, ValueError): # chemically invalid
+                    # print(e)             
+                    if "cannot sanitize mol" in str(e):
+                        chemical_invalid_smiles += 1
+                    elif "is not valid" in str(e):
+                        chemical_invalid += 1
+                    else:
+                        breakpoint()
                     continue
-                else:                    
-                    print(e)                
+                else:
+                    breakpoint()
+                    # print(e)                
                     continue
             DiffusionGraph.value_count(root, {}) # modifies edge_conn with :'s too
             name_traj = '->'.join(name_traj)
@@ -1309,12 +1429,46 @@ def sample_walks(args, G, graph, seen_dags, model, all_nodes, r_lookup, diffusio
                 print(f"novel count: {new_novel}")
             else:
                 print(f"{name_traj} discovered")
-            num_valid += 1
-            
+            num_valid += 1            
         # print(f"add {new_novel} samples, now {len(novel)} novel samples, validity: {num_valid}/{num_tried}")
     if not (nx.adjacency_matrix(G).toarray() == graph.adj).all():
         breakpoint()    
-    return novel, new_dags, trajs
+    if return_metrics:
+        metrics = {                   
+                   'num_sampled': num_sampled, # total number of trajectories
+                   'num_tried': num_tried, # number of processed trajectories                   
+                   'num_valid': num_valid, # number of verified trajectories
+                   'walk_invalid': walk_invalid, # number of failed trajectories due to bad walk
+                   'chemical_invalid': chemical_invalid, # number of failed trajectories due to bad smarts
+                   'chemical_invalid_smiles': chemical_invalid_smiles, # number of failed trajectories due to bad smiles
+                   }          
+        return novel, new_dags, trajs, metrics
+    else:
+        return novel, new_dags, trajs
+
+
+def extract_all_walks(args, G, graph, seen_dags, model, all_nodes, r_lookup, predefined_graph, **kwargs):
+    depth = -1
+    init_nodes = []
+    for n in G:
+        if ':' in n: 
+            continue
+        init_nodes.append(n)
+    # with Pool(50) as p:
+    #     res = p.starmap(extract_rule, tqdm(pargs))
+    parg = (init_nodes, 
+            G, 
+            graph, 
+            model, 
+            all_nodes, 
+            'group-contrib' in os.environ['dataset'],
+            args.max_thresh, 
+            args.min_thresh, 
+            depth,
+            r_lookup,
+            args.num_generate_samples)
+    trajs = extract_rule(*parg)    
+    return trajs
 
 
 def extract_rules(args, G, graph, seen_dags, model, all_nodes, r_lookup, predefined_graph, **kwargs):
@@ -1322,13 +1476,32 @@ def extract_rules(args, G, graph, seen_dags, model, all_nodes, r_lookup, predefi
     for n in G:
         if ':' in n: 
             continue
-        pargs.append((n, G, graph, model, all_nodes, 'group-contrib' in os.environ['dataset'], args.max_thresh, args.min_thresh, kwargs['depth']))
+        if 'best_first' in kwargs and kwargs['best_first']:
+            depth = -1
+            pargs.append((n, 
+                            G, 
+                            graph, 
+                            model, 
+                            all_nodes, 
+                            'group-contrib' in os.environ['dataset'], 
+                            args.max_thresh, 
+                            args.min_thresh, 
+                            depth,
+                            r_lookup))
+        else:
+            pargs.append((n, 
+                            G, 
+                            graph, 
+                            model, 
+                            all_nodes, 
+                            'group-contrib' in os.environ['dataset'], 
+                            args.max_thresh, 
+                            args.min_thresh, 
+                            depth))
     # with Pool(50) as p:
     #     res = p.starmap(extract_rule, tqdm(pargs))
     res = [extract_rule(*parg) for parg in pargs]
-    trajs = []
-    for r in res:
-        trajs += r
+    trajs = sum(res, [])
     return trajs
     
 
@@ -1426,6 +1599,23 @@ def run_checks():
 
 
 
+def vis_processed(mol, path):
+    # remove reds
+    ed_mol = Chem.EditableMol(mol)        
+    to_remove = []
+    for j in range(mol.GetNumAtoms()):
+        if mol.GetAtomWithIdx(j).GetBoolProp('r'):
+            if '_' not in mol.GetAtomWithIdx(j).GetProp('a'):
+                to_remove.append(j)
+    for j in sorted(to_remove, key=lambda x:-x):
+        ed_mol.RemoveAtom(j)
+    mol = ed_mol.GetMol()    
+    mol.UpdatePropertyCache(strict=False)
+    vis_mol(mol, path)    
+    return mol
+
+
+
 def main(args):
     walks = load_walks(args)
     diffusion_args = {k[len('diffusion_'):]: v for (k, v) in args.__dict__.items() if 'diffusion' in k}
@@ -1444,9 +1634,64 @@ def main(args):
     N = len(G)
     all_nodes = list(G.nodes())
     diffusion_args['adj_matrix'] = nx.adjacency_matrix(G).toarray()    
-
     loop_back = 'group-contrib' in os.environ['dataset']
+    data, dags = load_dags(args)
+    seen_dags = deepcopy(dags)      
 
+    ### Produce SMILES from list of walks for dataset release    
+    # r_lookup = r_member_lookup(mols)
+    # lines = open('/home/msun415/polymer_walk/data/polymer_walks_v2_preprocess.txt').readlines()
+    # f = open('/home/msun415/polymer_walk/data/polymer_walks_v2_smiles.txt', 'w+')
+    # lines = [l.split()[1] for l in lines]
+    # count = 0
+    # for i, walk in enumerate(lines):
+    #     grps = chain_extract(walk, predefined_graph)
+    #     root, conn = verify_walk(r_lookup, predefined_graph, grps, loop_back=True)
+    #     walk = [(str(a.id), str(b.id), a.val.split(':')[0], b.val.split(':')[0], e) for (a, b, e) in conn]                
+    #     try:
+    #         cands = walk_enumerate_mols(walk[:-2], predefined_graph, mols)
+    #     except Exception as e:
+    #         breakpoint()
+    #     mol = cands[1]
+    #     mol = vis_processed(mol, f'data/polymer_smiles/{i}.png')
+    #     smi = Chem.MolToSmiles(mol)
+    #     f.write(smi+'\n')
+    #     if Chem.MolFromSmarts(smi) is None:
+    #         count += 1
+    # f.close()    
+
+    ### Screen list of existing walks
+    # path = '/home/msun415/polymer_walk/data/screening_v1.txt'
+    # path_dir = '/home/msun415/polymer_walk/data/screening/'
+    # out_path = '/home/msun415/polymer_walk/data/screening_v1_smiles.txt'
+    # eval_trajs = [l.rstrip('\n').split(' ') for l in open(path).readlines()]
+    # name_trajs = [process_good_traj(traj, all_nodes) for traj in eval_trajs]    
+    # f = open(out_path, 'w+')
+    # for i, name_traj in enumerate(name_trajs):
+    #     root, conn = dfs_traverse(name_traj, loop_back=False)       
+    #     for a, b in conn:
+    #         if b.val not in predefined_graph[a.val]:
+    #             raise KeyError(f"{a.val} {b.val} not connected")                                    
+    #     walk = [(str(a.id), str(b.id), a.val.split(':')[0], b.val.split(':')[0]) for (a,b) in conn]
+    #     chosen_edges, new_mol = walk_enumerate_mols(walk, predefined_graph, mols, loop_back=False, return_all=True)
+    #     valid_checks = [check_valid(mol) for mol in new_mol]
+    #     if not np.any(valid_checks):
+    #         breakpoint()
+    #     else:
+    #         root.smiles_list = [Chem.MolToSmiles(mol) for mol, is_valid in zip(new_mol, valid_checks) if is_valid]
+    #         valid_mols = [mol for mol, is_valid in zip(new_mol, valid_checks) if is_valid]
+    #         chosen_edges = [chosen_edge for chosen_edge, is_valid in zip(chosen_edges, valid_checks) if is_valid]
+    #         root.smiles = root.smiles_list[0]
+    #         mol = valid_mols[0]
+    #         chosen_edges = chosen_edges[0]           
+    #     for j in tqdm(range(len(valid_mols))):
+    #         mol = valid_mols[j]
+    #         path = os.path.join(path_dir, f"{i}_{j}.png")        
+    #         mol = vis_processed(mol, path)
+    #     smile_list = ','.join(root.smiles_list)
+    #     f.write(f"{smile_list}\n")
+    # f.close()
+    
     if args.log_folder:
         model = L_grammar(len(graph.graph), diffusion_args)
         state = torch.load(os.path.join(args.log_folder, 'ckpt.pt'))
@@ -1471,10 +1716,35 @@ def main(args):
     if args.diffusion_side_chains:
         layer = side_chain_grammar(index_lookup, args.log_folder)
 
-    data, dags = load_dags(args)
-    seen_dags = deepcopy(dags)    
+
+    ### Sample new ones and compute metrics from existing SMILES
+    # old_smiles = open('/home/msun415/polymer_walk/data/polymer_walks_v2_smiles.txt').readlines()
+    # old_smiles = [old_smile for old_smile in old_smiles if Chem.MolFromSmiles(old_smile) is not None]
+    # options = {'best_first': True}
+    # all_walks = extract_all_walks(args, G, graph, seen_dags, model, all_nodes, r_lookup, predefined_graph, **options)    
+    # all_walks = pickle.load(open('/home/msun415/polymer_walk/data/polymer_all_walks_1000.pkl', 'rb'))
+    # all_rules[d] = []
+    # for rule_a, rule_b, probs in rules:
+    #     rule_a = process_good_traj(rule_a, all_nodes)
+    #     rule_b = process_good_traj(rule_b, all_nodes)
+    #     if len(rule_a) > 1:
+    #         try:
+    #             verify_walk(r_lookup, G, rule_a, loop_back=loop_back)
+    #         except:
+    #             print(rule_a, "is invalid")
+    #             continue
+    #     if len(rule_b) > 1:
+    #         try:
+    #             verify_walk(r_lookup, G, rule_b, loop_back=loop_back)                           
+    #         except:
+    #             print(rule_b, "is invalid")
+    #             continue                    
+    #     all_rules[d].append((rule_a, rule_b, probs))    
+    # new_smiles = [new_dag.smiles for _, new_dag, _ in all_walks]
+    # metrics = compute_metrics(args, mols, old_smiles, new_smiles)    
     if args.extract_rules:        
-        if os.path.exists(args.save_rules_path):
+        # if os.path.exists(args.save_rules_path):
+        if False: # DEBUG
             all_rules = json.load(open(args.save_rules_path))
             for d, rules in all_rules.items():
                 for i, (rule_a, rule_b, probs) in enumerate(rules): 
@@ -1525,12 +1795,23 @@ def main(args):
                         f.write(f"{rule_a}=>{rule_b}\n")
                 f.close()
     else:
-        attach_smiles(args, dags)
-        old_smiles = [dag.smiles for dag in dags]
+        if args.concat_mol_feats:
+            attach_smiles(args, dags)
+            old_smiles = [dag.smiles for dag in dags]
         if args.compute_train_metrics:
             train_data_metrics = compute_metrics(args, mols, None, old_smiles, retro_suffix='_train')
-            json.dump(train_data_metrics, open(os.path.join(args.log_folder, 'train_metrics.json'), 'w+'))
-        # novel, new_dags, trajs = sample_walks(args, G, graph, seen_dags, model, all_nodes, r_lookup, diffusion_args)                        
+            json.dump(train_data_metrics, open(os.path.join(args.log_folder, 'train_metrics.json'), 'w+'))        
+        novel, new_dags, trajs, gen_metrics = sample_walks(args, 
+                                              G, 
+                                              graph, 
+                                              seen_dags, 
+                                              model, 
+                                              all_nodes, 
+                                              r_lookup, 
+                                              diffusion_args,
+                                              return_metrics=True,
+                                              loop_back='group-contrib' in os.environ['dataset'])
+        breakpoint()
         if args.compute_metrics:            
             new_smiles = [dag.smiles for dag in new_dags]
             metrics = compute_metrics(args, mols, old_smiles, new_smiles, retro_suffix='_test')
@@ -1627,4 +1908,5 @@ if __name__ == "__main__":
     parser.add_argument('--vis_folder')
     args = parser.parse_args()
     # run_checks()
+    breakpoint()
     main(args)

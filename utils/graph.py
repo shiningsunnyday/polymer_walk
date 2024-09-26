@@ -665,15 +665,18 @@ def traverse_dfs(walk, graph, loop_back=False):
                     e_cyc = find_e(graph, nodes[cur].val, nodes[j].val, e)       
                     nodes[cur].add_child((nodes[j], e))
                     nodes[j].parent = (nodes[cur], e_cyc)
-                    conn.append((nodes[j], nodes[cur], e_cyc))                    
+                    conn.append((nodes[j], nodes[cur], e_cyc))
+                    conn.append((nodes[cur], nodes[j], e))
                     break
             to_do.append(j)
             node = Node(nodes[cur], [], walk.nodes[j]['val'], j, side)
             nodes[j] = node    
             e = walk[cur][j]['e']        
             nodes[cur].add_child((nodes[j], e))
-            nodes[j].parent = (nodes[cur], find_e(graph, nodes[cur].val, nodes[j].val, e))
+            e_reverse = find_e(graph, nodes[cur].val, nodes[j].val, e)
+            nodes[j].parent = (nodes[cur], e_reverse)                        
             conn.append((nodes[cur], nodes[j], e))
+            conn.append((nodes[j], nodes[cur], e_reverse))
     
 
     return root_node, conn
@@ -763,11 +766,33 @@ def verify_edge_conn(graph, conn, r_lookup):
                 breakpoint()
             b.parent = (a, find_edge(graph, b.val, a.val, red_j2, red_j1))
     return edge_conn
+
+
+def check_valid(smi):        
+    try:
+        Chem.MolToSmiles(smi)
+        return True
+    except:
+        return False
+    
+
+
+def process_mol(mol):
+    ed_mol = Chem.EditableMol(mol)        
+    to_remove = []
+    for j in range(mol.GetNumAtoms()):
+        if mol.GetAtomWithIdx(j).GetBoolProp('r'):
+            if '_' not in mol.GetAtomWithIdx(j).GetProp('a'):
+                to_remove.append(j)
+    for j in sorted(to_remove, key=lambda x:-x):
+        ed_mol.RemoveAtom(j)
+    mol = ed_mol.GetMol()    
+    mol.UpdatePropertyCache(strict=False)
+    return mol
+
  
 
-
-
-def verify_walk(r_lookup, graph, walk, loop_back=False):
+def verify_walk(r_lookup, graph, walk, loop_back=False, return_all=False, check_smiles=False):
     # r_lookup: dict(red group id: atoms)
     # check all edges exist
     # test_walk = [('0', '1', 'L3', 'S32', 2), ('1', '2', 'S32', 'S20', 2), ('2', '5', 'S20', 'S32', 2), ('2', '3', 'S20', 'S1', 1), ('2', '4', 'S20', 'S1', 4)]
@@ -776,7 +801,13 @@ def verify_walk(r_lookup, graph, walk, loop_back=False):
         if isinstance(walk, nx.Graph):            
             root, edge_conn = traverse_dfs(walk, graph, loop_back=loop_back)            
             used_reds = defaultdict(set)
+            # sanity check
+            seen_edges = set()
             for a, b, i in edge_conn:
+                if (a.id, b.id) or (b.id, a.id) in seen_edges:
+                    continue
+                else:
+                    seen_edges.add((a.id, b.id))
                 red_j1 = graph[a.val][b.val][i]['r_grp_1']
                 red_j2 = graph[a.val][b.val][i]['r_grp_2']
                 assert tuple(red_j1) in set(tuple(x) for x in r_lookup[a.val].values())
@@ -786,9 +817,8 @@ def verify_walk(r_lookup, graph, walk, loop_back=False):
                 if set(red_j2) & used_reds[b.id]:
                     breakpoint()
                 used_reds[a.id] |= set(red_j1)
-                used_reds[b.id] |= set(red_j2)            
-            
-            print("pass!")
+                used_reds[b.id] |= set(red_j2)                        
+            print("pass!")            
         elif isinstance(walk, list):
             root, conn = dfs_traverse(walk, loop_back=loop_back)       
             for a, b in conn:
@@ -800,25 +830,54 @@ def verify_walk(r_lookup, graph, walk, loop_back=False):
             """
             tracks all possible connections, then prunes the isomorphic
             copies at each step
-            """    
+            """                
             walk = [(str(a.id), str(b.id), a.val.split(':')[0], b.val.split(':')[0]) for (a,b) in conn]
-            chosen_edges, new_mol = walk_enumerate_mols(walk, graph, mols, loop_back=loop_back)            
-            assert new_mol is not None
-            root.smiles = Chem.MolToSmiles(new_mol)
-            if Chem.MolFromSmiles(root.smiles) is None:
-                raise ValueError(root.smiles)
+            chosen_edges, new_mol = walk_enumerate_mols(walk, 
+                                                        graph, 
+                                                        mols, 
+                                                        loop_back=False, 
+                                                        return_all=return_all)
+            if isinstance(new_mol, list):
+                valid_checks = [check_valid(mol) for mol in new_mol]
+                if not np.any(valid_checks):
+                    raise ValueError("No valid smarts")
+                else:
+                    root.smiles_list = [Chem.MolToSmiles(mol) for mol, is_valid in zip(new_mol, valid_checks) if is_valid]
+                    chosen_edges = [chosen_edge for chosen_edge, is_valid in zip(chosen_edges, valid_checks) if is_valid]
+                    # if possible, pick the one with valid smiles
+                    ind = 0
+                    for i in range(len(root.smiles_list)-1,-1,-1):
+                        smiles = root.smiles_list[i]
+                        if Chem.MolFromSmiles(smiles) is not None:
+                            ind = i
+                    root.smiles = root.smiles_list[ind]
+                    chosen_edges = chosen_edges[ind]
+            else:
+                assert new_mol is not None
+                root.smiles = Chem.MolToSmiles(new_mol)
+            if Chem.MolFromSmarts(root.smiles) is None:
+                raise ValueError(f"{root.smiles} is not valid smarts")                        
+            if check_smiles:
+                if Chem.MolFromSmiles(root.smiles) is None:
+                    raise ValueError(f"{root.smiles} is not valid smiles")
             conn = [(a,b,e) for (a,b), e in zip(conn, chosen_edges)]
             edge_conn = verify_edge_conn(graph, conn, r_lookup)
         else: 
             raise NotImplementedError
-    except Exception as e:        
-        raise e
-         
+    except Exception as e:           
+        if isinstance(e, KeyError):
+            raise e
+        elif isinstance(e, ValueError):
+            raise e
+        else:
+            breakpoint()
+      
     return root, edge_conn
 
 
 
 def is_novel(dags, root):
+    return True # TODO: DELETE THIS
     for dag in dags:
         if dag_isomorphic(dag, root):
             return False

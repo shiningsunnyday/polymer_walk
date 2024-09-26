@@ -1011,14 +1011,22 @@ def main(args):
         'mol_feats': mol_feats,
         'feat_lookup': feat_lookup
     }
-    novel, new_dags, trajs = sample_walks(args, G, graph, seen_dags, model, all_nodes, r_lookup, diffusion_args, predict_args=predict_args)
+    novel, new_dags, trajs = sample_walks(args, 
+                                          G, 
+                                          graph, 
+                                          seen_dags, 
+                                          model, 
+                                          all_nodes, 
+                                          r_lookup, 
+                                          diffusion_args, 
+                                          predict_args=predict_args,
+                                          loop_back='group-contrib' in os.environ['dataset'])
     if args.compute_metrics:
         metrics = compute_metrics(args, dags, new_dags)
         json.dump(metrics, open(os.path.join(args.logs_folder, 'main_metrics.json'), 'w+'))
     
     
     graph.reset()
-
     print("best novel samples")
     
     mean = [] ; std = []
@@ -1104,27 +1112,13 @@ def main(args):
 
     assert len(orig_preds[0]) == len(mean)
     orig_preds = [[orig_pred[i]*std[i]+mean[i] for i in range(len(orig_pred))] for orig_pred in orig_preds]
-    if 'group-contrib'in args.walks_file:
+    if 'group-contrib' in os.environ['dataset']:
         i1, i2 = args.property_cols            
-        out, out_2, orig_preds = np.array(out), np.array(out_2), np.array(orig_preds)
+        out, out_2, orig_preds = np.array(out), np.array(out_2), np.array(orig_preds)        
         # props[:,1] = props[:,0]/props[:,1]
         # orig_preds[:,1] = orig_preds[:,0]/orig_preds[:,1]
-        p1, p2 = np.concatenate((out,props[:,0])), np.concatenate((out_2,props[:,1]))    
-        pareto_1, not_pareto_1, pareto_2, not_pareto_2 = pareto_or_not(p1, p2, len(out), min_better=False)
-        fig = plt.Figure()    
-        ax = fig.add_subplot(1, 1, 1)
-        ax.set_title(f'({col_names[i1]}, {col_names[i1]}/{col_names[i2]}) of original vs novel monomers')
-        ax.scatter(out[not_pareto_1], out_2[not_pareto_1], c='b', label='predicted values of novel monomers')
-        ax.scatter(out[pareto_1], out_2[pareto_1], c='b', marker='v')    
-        ax.scatter(props[:,0][not_pareto_2], props[:,1][not_pareto_2], c='g', label='ground-truth values of original monomers')
-        ax.scatter(props[:,0][pareto_2], props[:,1][pareto_2], c='g', marker='v')
-        ax.scatter(orig_preds[:,0], orig_preds[:,1], c='r', label='predicted values of original monomers')
-        ax.set_xlabel(f'Permeability {col_names[i1]}')
-        ax.set_ylabel(f'Selectivity {col_names[i1]}/{col_names[i2]}')
-        ax.set_ylim(ymin=0)
-        ax.legend()
-        ax.grid(True)    
-        fig.savefig(os.path.join(args.logs_folder, 'pareto.png'))
+        path = plot_group_contrib(args.logs_folder, out, out_2, orig_preds, props, [col_names[i1], col_names[i2]])
+        print(path)
     else:
         i1 = args.property_cols[0]
         orig_preds = [[orig_pred[i]*std[i]+mean[i] for i in range(1)] for orig_pred in orig_preds]
@@ -1182,7 +1176,11 @@ def main(args):
         all_walks[key] = prune_walk(args, graph, all_walks[key])
                       
     # pickle.dump(novel, open(os.path.join(args.logs_folder, 'novel.pkl', 'wb+')))
-    breakpoint()
+    np.save(os.path.join(args.logs_folder, 'out.npy'), out)
+    np.save(os.path.join(args.logs_folder, 'out_2.npy'), out_2)
+    np.save(os.path.join(args.logs_folder, 'orig_preds.npy'), orig_preds)    
+
+
     all_walks['old'] = [[write_conn(x, G), *list(map(str, prop))] for x, prop in all_walks['old']]
     all_walks['novel'] = [[write_conn(x, G), *list(map(str, prop))] for x, prop in all_walks['novel']]
     print("novel", novel)

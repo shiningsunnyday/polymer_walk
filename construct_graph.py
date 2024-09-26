@@ -64,6 +64,7 @@ if __name__ == "__main__":
             name = l.split()[0]
             l = l[l.find(' ')+1:]
             walk = l.rstrip('\n').split(' ')[0]
+            breakpoint()
             if args.extract_edges: 
                 grps = chain_extract(walk, graph)                
             else: 

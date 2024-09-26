@@ -75,7 +75,7 @@ Please see the updated Table 3:
 
 We weren't sure whether you meant motif-based *generative* models or motif-based property *prediction*, as the literature for the two tasks are different (most works focus on one or the other, whereas our method handles both). For completeness, we performed separate ablation studies with respective SOTA motif-based methods.
 
-<strong>Comparison with Other Motif-based Generative Models</strong>
+**Comparison with Other Motif-based Generative Models**
 
 As mentioned previously, we include JT-VAE [1] as an additional baseline. Since JT-VAE is limited to only rings and bonds, we also include the author's follow-up work, Hier-VAE [2] which adopts larger structural motifs. Furthermore, we modified the implementation of Hier-VAE to incorporate *our* epert motifs. For all three cases, we follow the default settings, train until convergence, and use the checkpoint with the lowest loss to sample 1000 molecules. We include the results in the updated Table 3.
 
@@ -83,7 +83,7 @@ We observe that both VAE-based methods [1, 2] struggle to generate sufficiently 
 
 For reference, [1, 2] trained and evaluated their models on ZINC containing ~250K drug-like molecules and a polymer dataset containing 86K polymers. Meanwhile, our datasets contain only ~100-300 molecules and, in the case of HOPV, feature much larger molecules. Rather than using an encoder-decoder setup which requires significantly more data to learn the mapping to and from a latent space, our generative model explicitlys capture the transition probabilities over traversing the symbolic space of structural motifs. Our grammar derivation can easily be conditioned by a set-based context to apply a diverse set of transition rules (see the response to Reviewer 1 for a further discussion). This leads to more unique, diverse, and, most importantly, synthesizable structures. Additionally, our generative process is explainable to a chemist, and lead to scientific insights that may be difficult to interpret from black-box models.
 
-<strong>Comparison with Other Motif-based Property Predictors</strong>
+**Comparison with Other Motif-based Property Predictors**
 
 For property prediction, we ran a comparison study HM-GNN, a SOTA motif-based property predictor that explicitly models motif-molecule and motif-motif relationships using a hetereogenous graph. Just like the previous comparison study, we also endowed the method with *our* expert motifs since the vanilla version only considers bonds and rings. We plan to add the comparison to Table 4, so the final version is as follows:
 
@@ -107,7 +107,7 @@ We fixed it in the manuscript.
 
 We will update our manuscript with these additional results for the camera-ready version. 
 
-*<strong>Questions:</strong>*
+**Questions:**
 
 * *The description of the attachment points is unclear. Is it right that the contexts of attachment (red parts) is attached to the black parts of the other motif as described in Figure 1 (c)? Then how can motif 71 and 18 can be attached?*
 
@@ -119,7 +119,7 @@ An updated Figure 1 (with minor correction) is here: https://ibb.co/TcbVJ2H
 
 * *The choice of a graph heat diffusion process for the random walk mechanism prompts inquiry. A discussion on the relationship between random walk dynamics and graph heat diffusion, including the advantages of this approach over autoregressive models, would enhance understanding. Given that autoregressive models could effectively model the sequence of probabilities produced by a random walk, their comparative advantages should be explored.*
 
-Thank you for the question! We share your inquiry into the random walk mechanism. The relationship between graph heat diffusion and random walk has been studied before [4], but we integrate two new ideas: 1) making the Laplacian (edge weights) learnable and dynamically adjustable, and 2) parameterizing the adjustment on an order-invariant context. The reason as to why we don't just use autoregressive models is part of a larger discussion on the respective merits of autoregressive models vs grammar-based approaches (which we include in the Related Works, but can expand more on if necessary). In data-efficient settings, previous works [3, 4] show grammar (esp. context-free grammar) work well due to the relatively small (tens/hundreds) number of examples needed to learn valid rules and derivation sequences. Meanwhile, the number of possible hidden states that autoregressive models are parameterized to learn is exponential (to the length of the sequence), and error can accumulate during derivation. We take a middle ground, by combining the data-efficient advantages of context-free grammar and the expressivity of autoregressive models, by introducing a *context-sensitive* grammar which utilizes a set-based memory during the random walk.
+Thank you for the question! We share your inquiry into the random walk mechanism. The relationship between graph heat diffusion and random walk has been studied before [4], but we integrate two new ideas: 1) making the Laplacian (edge weights) learnable and dynamically adjustable, and 2) parameterizing the adjustment on an order-invariant context. The reason as to why we don't just use autoregressive models is part of a larger discussion on the respective merits of autoregressive models vs grammar-based approaches (which we include in the Related Works, but can expand more on if necessary). In data-efficient settings, previous works [3, 4] show grammar (esp. context-free grammar) work well due to the relatively small (tens/hundreds) number of examples needed to learn valid rules and derivation sequences. Meanwhile, the number of possible hidden states that autoregressive models are parameterized to learn is exponential (to the length of the sequence), and learning a good parameterization requires a large amount of data. We take a middle ground, combining the data-efficient advantages of context-free grammar and the expressivity of autoregressive models, by introducing a *context-sensitive* grammar which utilizes a set-based memory during the random walk.
 
 * *The term "context sensitivity" requires a more detailed definition. An explicit description of what is meant by context sensitivity, especially given its highlighted importance as a significant contribution of the proposed grammar, would provide clarity on this aspect.*
 
