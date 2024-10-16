@@ -1186,7 +1186,7 @@ if __name__ == "__main__":
     parser.add_argument('--props_file', help='(optional) file of properties for visualization when do_seg is false')
     parser.add_argument('--ignore_file')
     parser.add_argument('--annotation_file')
-    parser.add_argument('--seg_json_out_file', help='segmentations')
+    parser.add_argument('--seg_json_out_file', help='artifacts of segmentation, used to run other baselines with the segmented motifs')
     parser.add_argument('--out_file')
     args = parser.parse_args()
     main(args)
